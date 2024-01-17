@@ -1,0 +1,366 @@
+---
+title: "improvedRL"
+output: html_document
+date: "2023-12-25"
+---
+
+```{r}
+library(ndl)
+library(tidyverse)
+library("boot")
+library(mgcv)
+library(data.table)
+library(mclust)
+library(mvtnorm)
+source("functions.R")
+F0_reference <- readRDS("F0_reference.rds")
+VOT_reference <- readRDS("VOT_reference.rds")
+```
+
+# load data and apply ccure model for normalization
+```{r}
+Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>%
+  filter(poa == "/b/-/p/") %>%
+  droplevels() %>% 
+  filter(
+    between(VOT, mean(VOT) - 3 * sd(VOT), mean(VOT) + 3 * sd(VOT)),
+    between(f0_Mel, mean(f0_Mel) - 3 * sd(f0_Mel), mean(f0_Mel) + 3 * sd(f0_Mel))) %>% 
+  group_by(Talker, category) %>% 
+  mutate(n = n()) %>%
+  group_by(Talker) %>%
+  mutate(
+    n_min = min(n),
+    n_category = n_distinct(category)) %>%
+  # select talkers with both categories
+  filter(n_category == 2) %>%
+  group_by(Talker, category) %>%
+  sample_n(size = first(n_min)) %>%
+  ungroup() %>%
+  select(Talker, VOT, f0, f0_Mel, category) %>% 
+  mutate(
+    F0_centered = round(apply_ccure(f0_Mel, data = .), 0),
+    VOT_centered = round(apply_ccure(VOT, data = .), 0)
+  )
+```
+
+# calculate probability of /p/ responses from pretraining data
+```{r}
+data_b <- Long.term.knowledge %>% 
+  filter(category == "/b/")
+
+data_p <- Long.term.knowledge %>% 
+  filter(category == "/p/")
+
+mean_b <- data_b %>% select(VOT_centered, F0_centered) %>% summarise_all(mean) %>% as.numeric()
+cov_b <- data_b %>% select(VOT_centered, F0_centered) %>% cov()
+
+mean_p <- data_p %>% select(VOT_centered, F0_centered) %>% summarise_all(mean) %>% as.numeric()
+cov_p <- data_p %>% select(VOT_centered, F0_centered) %>% cov()
+
+calc_prob <- function(VOT_centered, F0_centered) {
+  token <- c(VOT_centered, F0_centered)
+  prob_density_b <- dmvnorm(token, mean = mean_b, sigma = cov_b)
+  prob_density_p <- dmvnorm(token, mean = mean_p, sigma = cov_p)
+  
+  total_density <- prob_density_b + prob_density_p
+  prob_p <- prob_density_p / total_density
+  
+  return(prob_p)
+}
+
+Long.term.knowledge <- Long.term.knowledge %>%
+  rowwise() %>%
+  mutate(normalized_prob_p = calc_prob(VOT_centered, F0_centered)) %>% 
+  mutate(prob_p = round(normalized_prob_p*100, 2),
+         prob_b = round((1-normalized_prob_p)*100, 2)) %>% 
+  ungroup()
+```
+
+# calculate initial parameters
+```{r space}
+space <- Long.term.knowledge %>% 
+        mutate(
+            Outcomes = category,
+            VOTslope = 0,
+            F0slope = 0)
+
+init.weights<-glm(normalized_prob_p ~
+                  scale(VOT_centered,scale=F)+scale(F0_centered,scale=F),
+                  data=space,
+                  family = "binomial"
+                  )$coefficients
+
+VOTslopes<-round(seq(from=0,to=init.weights[2]*4,by=init.weights[2]/5), 6)
+F0slopes<-round(seq(from=init.weights[3]*4,to=0,by=((-1)*init.weights[3]/5)), 6)
+original_VOTslope <- round(as.numeric(init.weights[2]), 6)
+original_F0slope <- round(as.numeric(init.weights[3]), 6)
+
+parameters <- expand.grid(VOTslopes = VOTslopes, 
+                        F0slopes = F0slopes,
+                        values = 0.01)
+
+parameters$values[parameters$VOTslopes==original_VOTslope & parameters$F0slopes==original_F0slope]<-0.9
+```
+
+# training data transformation
+```{r training data}
+canonical <- tribble(
+  ~VOT, ~f0,
+  -20, 230,
+  -10, 220,
+  -10, 230,
+  -10, 240,
+  0, 230,
+  20, 290,
+  30, 280,
+  30, 290,
+  30, 300,
+  40, 290
+)
+
+neutral = tribble(
+  ~VOT, ~f0,
+  -20, 260,
+  -10, 250,
+  -10, 260,
+  -10, 270,
+    0, 260,
+    20, 260,
+    30, 250,
+    30, 260,
+    30, 270,
+    40, 260
+   )
+
+reversed = tribble(
+  ~VOT, ~f0,
+  -20, 290,
+  -10, 280,
+  -10, 290,
+  -10, 300,
+    0, 290,
+    20, 230,
+    30, 220,
+    30, 230,
+    30, 240,
+    40, 230
+   )
+
+get_exposure_data <- function(training, talker) {
+  training %<>% 
+    left_join(F0_reference, by='f0') %>%
+    left_join(VOT_reference, by='VOT') %>% 
+    select(F0_centered, VOT_centered) %>% 
+    mutate(Talker=talker,
+           Outcomes=ifelse(VOT_centered %in% c(-8, 2, 12), "b", "p"),
+           Frequency=10,
+           F0_centered=F0_centered-mean(Long.term.knowledge$F0_centered),
+           VOT_centered=VOT_centered-mean(Long.term.knowledge$VOT_centered),
+           Cues = paste(paste0("vot", VOT_centered), paste0("f0", F0_centered), sep = "_")) %>% 
+    slice(rep(1:n(), each = Frequency)) %>% 
+    select(-Frequency)
+  }
+
+canonical <- get_exposure_data(training=canonical, talker="canonical")
+neutral <- get_exposure_data(training=neutral, talker="neutral")
+reversed <- get_exposure_data(training=reversed, talker="reversed")
+
+test <- tribble (
+  ~VOT, ~f0,
+  10, 230,
+  10, 290
+) %>% 
+  left_join(F0_reference, by='f0') %>%
+  left_join(VOT_reference, by='VOT') %>% 
+  mutate(F0_centered=F0_centered-mean(Long.term.knowledge$F0_centered),
+         VOT_centered=VOT_centered-mean(Long.term.knowledge$VOT_centered))
+  
+```
+
+# sanity check
+```{r}
+initial.test.results <- test %>% 
+  mutate(glm_results = VOT_centered*as.numeric(init.weights[2])+
+           F0_centered*as.numeric(init.weights[3]),
+         results = inv.logit(glm_results)
+  ) %>% 
+  left_join(F0_reference, by='f0') %>% 
+  rename(normalised_F0 = F0_centered.y) %>% 
+  mutate(normalised_F0 = factor(normalised_F0))
+
+initial.test.results 
+
+initial <- initial.test.results %>%
+  ggplot(aes(x = "pretraining", y = results, group = f0)) +
+  geom_point(aes(shape = normalised_F0), size = 3) +
+  theme(legend.text = element_text (size = 12),
+        legend.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold")) +
+  xlab("Condition") + ylab("Probability of /p/ responses") +
+  coord_cartesian(ylim = c(0, 1))
+initial
+```
+
+# Reinforcement function
+
+``` {r Reinforcement function; with different pretraining data}
+Reinforce = function (cuesOutcomes, parameters, rate) 
+{
+  
+	#data entry
+	cuesOutcomes$Cues<-gsub("vot","",cuesOutcomes$Cues)
+	cuesOutcomes$Cues<-gsub("f0","",cuesOutcomes$Cues)
+	
+	results_table <- tibble(
+	  VOTslopes=as.numeric(0),
+	  F0slopes=as.numeric(0),
+	  values=as.numeric(0),
+	)
+
+  for (i in 1:dim(cuesOutcomes)[1]){
+    for (j in 1:dim(parameters)[1]) 
+  {
+    
+    ou <- ifelse(cuesOutcomes$Outcomes[i] == "b", 0, 1)
+    
+    #Getting VOT and F0 from training
+    VOT_centered<-as.numeric(strsplit(cuesOutcomes$Cues[i], "_")[[1]][1])
+    F0_centered<-as.numeric(strsplit(cuesOutcomes$Cues[i], "_")[[1]][2])
+    
+    VOTslope = parameters$VOTslopes[j]
+    F0slope = parameters$F0slopes[j]
+    prediction = VOT_centered*VOTslope + F0_centered*F0slope
+    prediction.p = inv.logit(prediction)
+    cat.pred = ifelse(prediction.p != 0.5, round(prediction.p), prediction.p)
+    
+    parameters$values[j] <- ifelse(cat.pred == ou, 
+                                   parameters$values[j] + rate,
+                                   parameters$values[j] - rate)
+    
+    results_table <- results_table %>%
+      add_row(
+        VOTslopes = VOTslope,
+        F0slopes = F0slope,
+        values = parameters$values[j]
+      )
+    
+  }
+  }
+
+  values_table<-aggregate(values~VOTslopes+F0slopes,data=results_table,FUN="mean")
+  values<-values_table[values_table$values==max(values_table$values),]
+	
+  best_VOT_slope = as.numeric(values[1])
+  best_F0_slope = as.numeric(values[2])
+	
+	#Making predictions from these best models
+	#i.e., model averaging across the models tied for maximum value
+	results <- test %>% select(VOT_centered, F0_centered) %>% 
+	  mutate(predictions = 0)
+	
+	
+	for (i in 1:dim(results)[1])
+	{
+		model.predictions<-results$VOT_centered[i]*best_VOT_slope+results$F0_centered[i]*best_F0_slope
+		model.predictions<-inv.logit(model.predictions)
+		model.predictions1<-0
+		for (j in 1:length(model.predictions))
+		{
+			model.predictions1<-c(model.predictions1,model.predictions[j])
+		}
+		model.predictions1<-model.predictions1[2:length(model.predictions1)]
+		results$predictions[i]<-mean(model.predictions1) #Aggregating across models with maximum value
+	}
+	
+  return(list(values_table = values_table, results = results))
+	
+}
+```
+
+# canonical trials
+```{r warning=FALSE}
+train_canonical <- canonical
+train_canonical$Cues<-as.character(train_canonical$Cues)
+train_canonical$Outcomes<-as.character(train_canonical$Outcomes)
+
+w.re.canonical<-Reinforce(cuesOutcomes=train_canonical, parameters=parameters, rate=0.1)
+w.re.canonical$Condition <- "canonical"
+parameter.canonical = w.re.canonical$values_table
+
+w.re.canonical
+```
+
+# neutral trials
+
+```{r warning=FALSE}
+train_neutral <- neutral
+train_neutral$Cues<-as.character(train_neutral$Cues)
+train_neutral$Outcomes<-as.character(train_neutral$Outcomes)
+
+w.re.neutral<-Reinforce(cuesOutcomes = train_canonical, parameters=parameters, rate=0.1)
+w.re.neutral$Condition <- "neutral"
+parameter.neutral = w.re.neutral$values_table
+w.re.neutral
+```
+
+
+# Reversed trials
+```{r warning=FALSE}
+train_reversed <- reversed
+train_reversed$Cues<-as.character(train_reversed$Cues)
+train_reversed$Outcomes<-as.character(train_reversed$Outcomes)
+
+w.re.reversed<-Reinforce(cuesOutcomes = train_reversed, parameters=parameters, rate=0.1)
+w.re.reversed$Condition <- "reversed"
+w.re.reversed
+```
+
+
+
+# plot
+```{r}
+RLdata <- rbind(w.re.canonical$results, w.re.neutral$results, w.re.reversed$results)
+RLdata$normalised_F0 <- c(199, 269, 199, 269, 199, 269)
+RLdata$normalised_F0 <- factor(RLdata$normalised_F0)
+RLdata$VOT <- c(22,22,22,22,22,22)
+RLdata$Condition <- c('canonical', 'canonical', 'neutral', 'neutral', 'reversed','reversed')
+
+gf0 <- RLdata %>%
+  ggplot(aes(x = Condition, y = predictions, group = normalised_F0))+
+  geom_point(aes(shape = normalised_F0), size = 3) +
+  theme(legend.text = element_text (size = 12),
+        legend.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"))+
+  xlab ("Condition") + ylab("Probability of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+
+gf0
+```
+
+
+# Density plots
+```{r}
+ggplot(space, aes(x = VOT_centered, fill = Outcomes)) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("blue", "red")) +
+    labs(title = "Density Plot of VOT for 'b' and 'p'",
+         x = "VOT",
+         y = "Density") +
+    theme_minimal()
+```
+```{r}
+ggplot(space, aes(x = F0_centered, fill = Outcomes)) +
+    geom_density(alpha = 0.5) +
+    scale_fill_manual(values = c("blue", "red")) +
+    labs(title = "Density Plot of VOT for 'b' and 'p'",
+         x = "VOT",
+         y = "Density") +
+    theme_minimal()
+```
+

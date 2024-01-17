@@ -1,0 +1,332 @@
+---
+title: "Sanity_check"
+output: html_document
+date: "2024-01-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("libraries.R")
+source("functions.R")
+```
+
+```{r}
+cues <- c("VOT_centered", "f0_Mel_centered")
+
+Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>% 
+  filter(category %in% c('/b/', '/p/')) %>%
+  droplevels() %>% 
+  filter(
+    between(VOT, mean(VOT) - 3 * sd(VOT), mean(VOT) + 3 * sd(VOT)),
+    between(f0_Mel, mean(f0_Mel) - 3 * sd(f0_Mel), mean(f0_Mel) + 3 * sd(f0_Mel))) %>% 
+  group_by(Talker, category) %>% 
+  mutate(n = n()) %>%
+  group_by(Talker) %>%
+  mutate(
+    n_min = min(n),
+    n_category = n_distinct(category)) %>%
+  # select talkers with both categories
+  filter(n_category == 2) %>%
+  group_by(Talker, category) %>%
+  sample_n(size = first(n_min)) %>%
+  ungroup() %>%
+  mutate_at(
+      c("VOT", "f0_Mel"),
+      list("centered" = function(x) apply_ccure(x, data = .)))
+  
+prior_marginal_VOT_f0_stats <-
+  Long.term.knowledge %>%
+  group_by(Talker) %>%
+  summarise(across(c(VOT, f0_Mel), mean)) %>% 
+  ungroup() %>%
+  summarise(
+    x_mean = list(c(VOT = mean(VOT), f0 = mean(f0_Mel))),
+    x_var_VOT = var(VOT),
+    x_var_f0 = var(f0_Mel),
+    x_cov = list(cov(cbind(VOT, f0_Mel))))
+
+m.VOT_f0_MVG <-
+  make_MVG_from_data(
+  data = Long.term.knowledge,
+  category = "category",
+  cues = cues)
+
+m.io.VOT_f0.IH <- #make ideal observer for the I&H(2011) experiment
+  m.VOT_f0_MVG  %>%
+  make_stop_VOTf0_ideal_observer() %>% 
+  arrange(category)
+```
+
+
+```{r}
+n.subject = 1
+example_label = "Cue_reweighting"
+```
+
+```{r sort exposure data}
+
+get_exposure_data <- function(input_data, Condition, n.subject=1) {
+  input_data %<>% left_join(F0_reference, by='f0') %>% left_join(VOT_reference, by='VOT')
+  input_data %<>%
+  select(-VOT, -f0, -f0_Mel) %>% 
+  mutate(Condition=Condition,
+         Item.Category = case_when(
+              VOT %in% c(-20, -10, 0) ~ "/b/",
+              TRUE ~ "/p/")) %>% 
+  rename(VOT = VOT_centered,
+         f0_Mel = F0_centered) %>% 
+  crossing(Subject = factor(1:n.subject)) %>%
+  mutate(Subject = paste(Condition, Subject, sep = "."),
+         Phase = 'training',
+         x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
+  mutate(Frequency=10) %>% 
+  slice(rep(1:n(), each = Frequency)) %>% 
+  mutate(ItemID=as.character(row_number())) %>% 
+  select(-Frequency)
+  
+  return(input_data)
+}
+
+canonical <- tribble(
+  ~VOT, ~f0,
+  -20, 230,
+  -10, 220,
+  -10, 230,
+  -10, 240,
+  0, 230,
+  20, 290,
+  30, 280,
+  30, 290,
+  30, 300,
+  40, 290
+)
+
+neutral = tribble(
+  ~VOT, ~f0,
+  -20, 260,
+  -10, 250,
+  -10, 260,
+  -10, 270,
+    0, 260,
+    20, 260,
+    30, 250,
+    30, 260,
+    30, 270,
+    40, 260
+   )
+
+reversed = tribble(
+  ~VOT, ~f0,
+  -20, 290,
+  -10, 280,
+  -10, 290,
+  -10, 300,
+    0, 290,
+    20, 230,
+    30, 220,
+    30, 230,
+    30, 240,
+    40, 230
+   )
+
+
+d.IH.canonical <- get_exposure_data(canonical, Condition='canonical')
+d.IH.neutral <- get_exposure_data(neutral, Condition='neutral')
+d.IH.reversed <- get_exposure_data(reversed, Condition='reversed')
+
+cues <- c('VOT', 'f0_Mel')
+m.VOT_f0_MVG_canonical <- make_MVG_from_data(data=d.IH.canonical,category="Item.Category",cues=cues)
+m.VOT_f0_MVG_neutral <- make_MVG_from_data(data=d.IH.neutral,category = "Item.Category",cues=cues)
+m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.Category",cues=cues)
+```
+
+```{r}
+n.subject=1
+d.IH.test <- tibble(
+  VOT = 22,
+  f0_Mel = c(199,269)
+) %>% 
+  mutate(Phase='test',
+         Item.Category=NA,
+         Item.Intended_category = case_when(
+           f0_Mel==199 ~ '/b/',
+           TRUE ~ '/p/'),
+         x=map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y)),
+         Item.Type='test',
+         Block=1) %>% 
+  crossing(Condition='test') %>% 
+  mutate(Subject=paste(Condition, n.subject, sep = ".")) %>% 
+  mutate(ItemID=as.character(row_number()))
+```
+
+```{r}
+# set parameter ranges considered by the optimization algorithm
+## parameters for representations model
+range.prior_kappa <- c(1, 10000)
+range.prior_nu <- c(4, 10000) 
+## parameters for bias model
+range.lapse_rate <- c(0, 1)
+range.beta_pi <- c(10^-3, 10^2)
+
+## parameters for normalization model
+range.prior_kappa.normalization <- c(1, 10000)
+```
+
+#representation models
+```{r find_best_model.representations.IH, message=FALSE, warning=FALSE}
+prior_kappa.plot = 4^(1:5) # specify what parameters to plot
+prior_nu.plot = 4^(1:5) 
+
+get_representation_models_for_plot <- function(
+    prior_kappa = prior_kappa.plot,
+    prior_nu = prior_nu.plot,
+    d.IH.exposure
+){
+  
+  Condition=d.IH.exposure$Condition[[1]]
+  
+  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))){
+    m.ia.VOT_f0.IH.plot_sample <-
+      crossing(
+        prior_kappa = prior_kappa,
+        prior_nu = prior_nu) %>%
+      rowwise() %>%
+      mutate(ideal_adaptor = map2(prior_kappa, prior_nu, ~ make_stop_VOTf0_ideal_adaptor(m = m.io.VOT_f0.IH, kappa = .x, nu = .y))) %>%
+      unnest(ideal_adaptor) %>%
+      arrange(category)
+    
+    representations.pred <- 
+      d.IH.exposure %>%
+      nest(data = -c(Condition, Subject)) %>%
+      crossing(
+        m.ia.VOT_f0.IH.plot_sample %>%
+          nest(prior = -c(prior_kappa, prior_nu))) %>%
+      group_by(Condition, Subject, prior_kappa, prior_nu) %>%
+      group_modify(~ update_representations_and_categorize_test(prior = .x$prior[[1]], exposure = .x$data[[1]], test = d.IH.test)) %>%
+      mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
+      mutate_at(vars(starts_with("prior_")), fct_rev) %>%
+      ungroup()
+    
+    saveRDS(representations.pred, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds"))) #
+  } else {
+    representations.pred <- readRDS(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))
+  }
+  
+  return(representations.pred)
+}
+
+d.IH.pretraining <- d.IH.canonical %>% 
+  mutate(Condition='pretraining')
+
+representation.IH.pretraining <- get_representation_models_for_plot(
+  d.IH.exposure = d.IH.pretraining,
+  prior_kappa = 10000,
+  prior_nu = 10000) %>% 
+  mutate(prob.p = ifelse(category=='/p/', response, 1-response))
+
+representation.pretraining
+```
+
+```{r}
+testStim<-rbind(c("vot22","V","f0199"),
+                c("vot22","V","f0269"))
+numTestStim<-dim(testStim)[1]
+plot.data<-data.frame(testStim,stringsAsFactors=F)
+names(plot.data)=c("VOT","V","F0")
+
+plot.data$prob.pretraining <- representation.pretraining$prob.p
+
+gf0 <- plot.data %>%
+  ggplot(aes(x = "pretraining", y = prob.pretraining, group = F0)) + 
+  geom_point(aes(shape = F0), size = 3) +
+  theme(legend.text = element_text (size = 12),
+        legend.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        axis.text.x = element_text(size = 12),
+        axis.title = element_text(size = 12, face = "bold"))+
+  xlab ("Condition") + ylab("Posterior probability for p") +
+  coord_cartesian(ylim = c(0,1))
+
+gf0
+```
+
+# plot the distribution of C&W in comparison with canonical trials
+```{r}
+
+canonical.sanity.check <- tribble(
+  ~VOT, ~f0,
+  -20, 230,
+  -10, 220,
+  -10, 230,
+  -10, 240,
+  0, 230,
+  20, 290,
+  30, 280,
+  30, 290,
+  30, 300,
+  40, 290
+) %>% 
+  mutate(category = case_when(
+              VOT %in% c(-20, -10, 0) ~ "/b/",
+              TRUE ~ "/p/")) %>% 
+  left_join(F0_reference, by='f0') %>% 
+  left_join(VOT_reference, by='VOT')
+
+test.sanity.check <- tribble(
+  ~VOT, ~f0, ~category,
+  10, 230, "/b/",
+  10, 290, "/p/",
+  10, 230, "/p/",
+  10, 290, "/b/"
+  ) %>% 
+  left_join(F0_reference, by='f0') %>% 
+  left_join(VOT_reference, by='VOT')
+
+Long.term.knowledge <- Long.term.knowledge %>% 
+  mutate(category = recode(category,
+                           "/b/" = "/b/ in Chodroff and Wilson (2018)",
+                           "/p/" = "/p/ in Chodroff and Wilson (2018)"))
+
+```
+
+
+
+```{r}
+raw.cue.plot <- ggplot() +
+  stat_ellipse(data = Long.term.knowledge, aes(x = VOT, y = f0_Mel, color = category), 
+               geom = "polygon", level = 0.95, alpha = 0.2) +
+  geom_point(data = Long.term.knowledge, aes(x = VOT, y = f0_Mel, color = category), size = 0.1) +
+  geom_point(data = test.sanity.check, aes(x = VOT, y = f0_Mel, color = "Test trials from Idemaru and Holt (2011)"), size = 1) +
+  geom_point(data = canonical.sanity.check, aes(x = VOT, y = f0_Mel, color = "Canonical trials from Idemaru and Holt (2011)"), size = 1) +
+  scale_color_manual(values = c("/b/ in Chodroff and Wilson (2018)" = "orange", 
+                                "/p/ in Chodroff and Wilson (2018)" = "blue", 
+                                "Test trials from Idemaru and Holt (2011)" = "green",
+                                "Canonical trials from Idemaru and Holt (2011)" = "red")) +
+  labs(color = "") +
+  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor raw VOT and F0 (Mel)") +
+  theme(plot.title = element_text(face = "bold"))
+  
+
+raw.cue.plot
+```
+
+
+```{r F0 centered in the canonical data frame refers to f0 Mel centered} 
+C.cure.cue.plot <- ggplot() +
+  stat_ellipse(data = Long.term.knowledge, aes(x = VOT_centered, y = f0_Mel_centered, color = category), 
+               geom = "polygon", level = 0.95, alpha = 0.2) +
+  geom_point(data = Long.term.knowledge, aes(x = VOT_centered, y = f0_Mel_centered, color = category), size = 0.1) +
+  geom_point(data = test.sanity.check, aes(x = VOT_centered, y = F0_centered, color = "Test trials from Idemaru and Holt (2011)"), size = 1) +
+  geom_point(data = canonical.sanity.check, aes(x = VOT_centered, y = F0_centered, color = "Canonical trials from Idemaru and Holt (2011)"), size = 1) +
+  scale_color_manual(values = c("/b/ in Chodroff and Wilson (2018)" = "orange", 
+                                "/p/ in Chodroff and Wilson (2018)" = "blue", 
+                                "Test trials from Idemaru and Holt (2011)" = "green",
+                                "Canonical trials from Idemaru and Holt (2011)" = "red")) +
+  labs(color = "") +
+  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor talker normalised VOT and F0 (Mel)") +
+  theme(plot.title = element_text(face = "bold"))
+
+C.cure.cue.plot
+```
+
