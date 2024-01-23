@@ -17,7 +17,7 @@ duo.panel.key <- unit(0.2, 'cm')
 SET_SEED = T
 ```
 
-# pretraining data
+# Pretraining
 ```{r filter pretraining data from C&W and get ideal observer}
 cues <- c("VOT_centered", "f0_Mel_centered")
 prior_kappa.plot = 4^(1:6) # specify what parameters to plot
@@ -76,13 +76,23 @@ m.ia.VOT_f0.IH <-
   arrange(category)
 ```
 
-# parameters
+# Parameters
 ```{r}
 n.subject = 1
 example_label = "Cue_reweighting"
+# set parameter ranges considered by the optimization algorithm
+## parameters for representations model
+range.prior_kappa <- c(1, 10000)
+range.prior_nu <- c(4, 10000) 
+## parameters for bias model
+range.lapse_rate <- c(0, 1)
+range.beta_pi <- c(10^-3, 10^2)
+
+## parameters for normalization model
+range.prior_kappa.normalization <- c(1, 10000)
 ```
 
-#Exposure data
+#Exposure
 ```{r sort exposure data}
 
 get_exposure_data <- function(input_data, Condition, n.subject=1) {
@@ -100,11 +110,8 @@ get_exposure_data <- function(input_data, Condition, n.subject=1) {
   mutate(Subject = paste(Condition, Subject, sep = "."),
          Phase = 'training',
          x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
-  mutate(Frequency=10) %>% 
-  slice(rep(1:n(), each = Frequency)) %>% 
-  mutate(ItemID=as.character(row_number())) %>% 
-  select(-Frequency)
-  
+  mutate(ItemID=as.character(row_number()))
+
   return(input_data)
 }
 
@@ -164,7 +171,7 @@ m.VOT_f0_MVG_canonical <- make_MVG_from_data(data=d.IH.canonical,category="Item.
 m.VOT_f0_MVG_neutral <- make_MVG_from_data(data=d.IH.neutral,category = "Item.Category",cues=cues)
 m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.Category",cues=cues)
 ```
-# Test
+#Test
 ```{r}
 n.subject=1
 d.IH.test <- tibble(
@@ -182,20 +189,6 @@ d.IH.test <- tibble(
   crossing(Condition='test') %>% 
   mutate(Subject=paste(Condition, n.subject, sep = ".")) %>% 
   mutate(ItemID=as.character(row_number()))
-```
-
-# set parameter ranges 
-```{r}
-# set parameter ranges considered by the optimization algorithm
-## parameters for representations model
-range.prior_kappa <- c(1, 10000)
-range.prior_nu <- c(4, 10000) 
-## parameters for bias model
-range.lapse_rate <- c(0, 1)
-range.beta_pi <- c(10^-3, 10^2)
-
-## parameters for normalization model
-range.prior_kappa.normalization <- c(1, 10000)
 ```
 
 # basic plot function
@@ -227,28 +220,59 @@ basic_IH_result_plot <- function(data) {
 
 ```
 
-## representation models
+## Representation models
 ```{r find_best_model.representations.IH, message=FALSE, warning=FALSE}
-
+update_representations_and_categorize_test <- function(
+  prior,
+  exposure,
+  test,
+  cues = c("VOT", "f0_Mel")
+) {
+  update_NIW_ideal_adaptor_incrementally(
+    prior = prior,
+    exposure = exposure,
+    exposure.category = "Item.Category",
+    exposure.cues = cues,
+    noise_treatment = "marginalize",
+    lapse_treatment = "marginalize",
+    method = "label-certain",
+    keep.update_history = FALSE,
+    keep.exposure_data = FALSE) %>%
+    nest(posterior = everything()) %>%
+    add_test_and_categorize(test)
+}
 
 get_representation_models_for_plot <- function(
     prior_kappa = prior_kappa.plot,
     prior_nu = prior_nu.plot,
-    d.IH.exposure
+    d.IH.exposure,
+    ideal_adaptor,
+    type
 ){
   
-  Condition=d.IH.exposure$Condition[[1]]
-  
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))){
-    m.ia.VOT_f0.IH.plot_sample <-
-      crossing(
-        prior_kappa = prior_kappa,
-        prior_nu = prior_nu) %>%
-      rowwise() %>%
-      mutate(ideal_adaptor = map2(prior_kappa, prior_nu, ~ make_stop_VOTf0_ideal_adaptor(m = m.io.VOT_f0.IH, kappa = .x, nu = .y))) %>%
-      unnest(ideal_adaptor) %>%
-      arrange(category)
+  all_representations <- list()
+  browser()
+  Condition = d.IH.exposure$Condition[[1]]
+  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))){
     
+  for(i in 1:10){  # Loop to iterate 10 times
+
+      if(i == 1){
+        # Use the ideal adaptor for the first iteration
+        m.ia.VOT_f0.IH.plot_sample <- ideal_adaptor
+       
+      } else {
+        # Use the posterior from the previous iteration for the subsequent iteration
+        m.ia.VOT_f0.IH.plot_sample <- 
+        posterior_model_previous <- all_representations[[i-1]] %>% 
+        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
+        filter(Item.Intended_category == "/p/") %>% 
+        select(prior_kappa, prior_nu, posterior) %>% 
+        unnest(posterior) %>% 
+        arrange(category)
+        
+      }
+      
     representations.pred <- 
       d.IH.exposure %>%
       nest(data = -c(Condition, Subject)) %>%
@@ -259,21 +283,49 @@ get_representation_models_for_plot <- function(
       group_modify(~ update_representations_and_categorize_test(prior = .x$prior[[1]], exposure = .x$data[[1]], test = d.IH.test)) %>%
       mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
       mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-      ungroup()
-    
-    saveRDS(representations.pred, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds"))) #
-  } else {
-    representations.pred <- readRDS(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))
-  }
+      ungroup() %>% 
+      mutate(Iteration = i)
+      
+      # Ensure to add the result to the all_representations list
+      all_representations[[i]] <- representations.pred
+       saveRDS(all_representations, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))
+    }
+    }
+    else {
+      all_representations <- readRDS(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))
+    }
   
-  return(representations.pred)
+  
+  return(all_representations)
 }
 
-representation.IH.canonical <- get_representation_models_for_plot(d.IH.exposure = d.IH.canonical)
-representation.IH.neutral <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral)
-representation.IH.reversed <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed)
+#get results for independent and sequential models
+#(as canonical trials are the first block, no sequential model for canonical is needed.)
+representation.IH.canonical.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.canonical, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
 
-representation <- rbind(representation.IH.canonical, representation.IH.neutral, representation.IH.reversed) %>% 
+#get the posterior of results before being passed into the sequential model
+model.for.sequential <- function(representation.model) {
+  representation.model <- representation.model %>% 
+        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
+        filter(Item.Intended_category == "/p/") %>% 
+        select(prior_kappa, prior_nu, posterior) %>%
+        unnest(posterior)
+}
+
+#neutral
+representation.IH.neutral.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
+representation.IH.neutral.sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=model.for.sequential(representation.IH.canonical.independent[[10]]), type="sequential")
+#reversed
+representation.IH.reversed.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
+representation.IH.reversed.sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=model.for.sequential(representation.IH.neutral.sequential[[10]]), type="sequential")
+
+#make tibbles for plots
+representation.independent <- rbind(representation.IH.canonical.independent[[10]], representation.IH.neutral.independent[[10]], representation.IH.reversed.independent[[10]]) %>% 
+  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
+         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
+         normalised_F0 = factor(normalised_F0))
+
+representation.sequential <- rbind(representation.IH.canonical.independent[[10]], representation.IH.neutral.sequential[[10]], representation.IH.reversed.sequential[[10]]) %>% 
   mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
          normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
          normalised_F0 = factor(normalised_F0))
@@ -294,22 +346,35 @@ make_results_plot_representations <- function(data) {
 
 }
 
-p.representation <- make_results_plot_representations(representation)
-p.representation
+p.representation.independent <- make_results_plot_representations(representation.independent)
+p.representation.sequential <- make_results_plot_representations(representation.sequential)
+p.representation.independent
+p.representation.sequential
 ```
 
 
 # sanity check: representation
-```{r}
+```{r message=FALSE, warning=FALSE}
 d.IH.pretraining <- d.IH.canonical %>% 
   mutate(Condition='pretraining')
+
+m.ia.VOT_f0.IH.pretraining <-
+  crossing(
+    prior_kappa = 10000,
+    prior_nu = 10000) %>% 
+  rowwise() %>%
+  mutate(ideal_adaptor = map2(prior_kappa, prior_nu, ~ make_stop_VOTf0_ideal_adaptor(m = m.io.VOT_f0.IH, kappa = .x, nu = .y))) %>% 
+  unnest(ideal_adaptor) %>% 
+  arrange(category)
 
 representation.IH.pretraining <- get_representation_models_for_plot(
   d.IH.exposure = d.IH.pretraining,
   prior_kappa = 10000,
-  prior_nu = 10000)
+  prior_nu = 10000,
+  ideal_adaptor=m.ia.VOT_f0.IH.pretraining,
+  type="independent")
 
-representation.initial <- representation.IH.pretraining %>%
+representation.initial <- representation.IH.pretraining[[10]] %>%
   mutate(prob.p = ifelse(category=='/p/', response, 1-response),
          normalised_F0 = ifelse(category=='/p/', 269, 199),
          normalised_F0 = factor(normalised_F0)) %>% 
@@ -327,7 +392,7 @@ representation.initial
 ```
 
 
-## normalization models
+## Normalization models
 ```{r}
 update_normalization_and_categorize_test <- function(
   prior,
@@ -336,8 +401,7 @@ update_normalization_and_categorize_test <- function(
   exposure,
   test
 ) {
-  
-  
+
   # Get normalization parameters for exposure data
   exposure.normalization <- 
     exposure %>%
@@ -367,59 +431,130 @@ update_normalization_and_categorize_test <- function(
 
 
 get_normalization_models_for_plot <- function(
-    prior_kappa.normalization,
-    d.IH.exposure
+    prior_kappa.normalization = c(4, 16, 64, 256, 1024),
+    d.IH.exposure,
+    normalization.prior,
+    type
 ){
-  Condition=d.IH.exposure$Condition[[1]]
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition,".rds")))){
-     normalization.pred <- 
-       d.IH.exposure %>%
-       nest(data = -c(Condition, Subject)) %>%
-       crossing(
-          prior_kappa.normalization = prior_kappa.normalization,
-          m.ia.VOT_f0.IH %>%
-            filter(prior_kappa == max(prior_kappa) & prior_nu == max(prior_nu)) %>%
-            nest(prior = everything())) %>%
-       group_by(Condition, Subject, prior_kappa.normalization) %>% 
-       group_modify(
-         ~ update_normalization_and_categorize_test(
-           prior = .x$prior[[1]],
-           kappa.normalization = .y$prior_kappa.normalization,
-           exposure = .x$data[[1]],
-           test = d.IH.test)) %>%
-       mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
-       mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-      ungroup()
-     
-     saveRDS(normalization.pred, get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition,".rds")))
-   } else {
-     normalization.pred <- readRDS(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition,".rds")))
-   }
-  return(normalization.pred)
+  all_normalizations <- list()  # Create an empty list to store results from each iteration
+  Condition = d.IH.exposure$Condition[[1]]
+  
+  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))){
+    
+  for(i in 1:10){  # Loop to iterate 10 times
+      if(i == 1){
+        normalization.adaptor <-  normalization.prior
+      } else {
+        normalization.adaptor <- all_normalizations[[i-1]]
+      }
+  
+      
+      normalization.adaptor <- normalization.adaptor %>% 
+        filter(Item.Intended_category == "/p/") %>% 
+        select(prior_kappa.normalization, posterior) %>% 
+        rename(prior=posterior)
+    
+      normalization.pred <- 
+        d.IH.exposure %>%
+        nest(data = -c(Condition, Subject)) %>%
+        crossing(prior_kappa.normalization = normalization.adaptor$prior_kappa.normalization,
+                 prior = normalization.adaptor$prior) %>%
+        mutate(prior_kappa.normalization = as.numeric(as.character(prior_kappa.normalization))) %>% 
+        group_by(Condition, Subject, prior_kappa.normalization) %>% 
+        group_modify(
+          ~ update_normalization_and_categorize_test(
+            prior = .x$prior[[1]],
+            kappa.normalization = .y$prior_kappa.normalization,
+            exposure = .x$data[[1]],
+            test = d.IH.test)) %>%
+        mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
+        mutate_at(vars(starts_with("prior_")), fct_rev) %>%
+        ungroup()
+
+      all_normalizations[[i]] <- normalization.pred
+      }
+      saveRDS(all_normalizations, get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))
+    } else {
+      all_normalizations <- readRDS(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))
+      
+    }
+  
+
+  return(all_normalizations)
 }
 
+m.ia.VOT_f0.IH.normalization <- m.ia.VOT_f0.IH %>% 
+  filter(prior_kappa == max(prior_kappa) & prior_nu == max(prior_nu)) %>%
+  nest(posterior = everything()) %>% 
+  crossing(prior_kappa.normalization = c(4, 16, 64, 256, 1024)) %>% 
+  mutate(Item.Intended_category="/p/",
+         prior_kappa.normalization = factor(prior_kappa.normalization))
+  
+  
  # specify what parameters to plot
-d.IH.normalization.canonical <- get_normalization_models_for_plot(d.IH.exposure=d.IH.canonical, prior_kappa.normalization = c(4, 16, 64, 256, 1024))
-d.IH.normalization.neutral <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, prior_kappa.normalization = c(4, 16, 64, 256, 1024))
-d.IH.normalization.reversed <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, prior_kappa.normalization = c(4, 16, 64, 256, 1024))
+# canonical, again, independent only
+d.IH.normalization.canonical.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.canonical, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent")
 
-normalisation <- rbind(d.IH.normalization.canonical,
-                       d.IH.normalization.neutral,
-                       d.IH.normalization.reversed) %>% 
+
+# neutral
+d.IH.normalization.neutral.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent" )
+d.IH.normalization.neutral.sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=d.IH.normalization.canonical.independent[[10]], type="sequential")
+
+d.IH.normalization.reversed.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent")
+d.IH.normalization.reversed.sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=d.IH.normalization.neutral.sequential[[10]], type="sequential")
+
+normalisation.independent <- rbind(d.IH.normalization.canonical.independent[[10]],
+                       d.IH.normalization.neutral.independent[[10]],
+                       d.IH.normalization.reversed.independent[[10]]) %>% 
   mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
          normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
          normalised_F0 = factor(normalised_F0))
+
+normalisation.sequential <- rbind(d.IH.normalization.canonical.independent[[10]],
+                       d.IH.normalization.neutral.sequential[[10]],
+                       d.IH.normalization.reversed.sequential[[10]]) %>% 
+  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
+         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
+         normalised_F0 = factor(normalised_F0))
+```
+
+# normalisation plot
+```{r}
+make_results_plot_normalization <- function(data){
+  p.results <- 
+    basic_IH_result_plot(data) +
+    facet_grid(
+      . ~ prior_kappa.normalization,
+      labeller = label_bquote(
+        cols = ~kappa[0] == .(as.character(prior_kappa.normalization)))) +   
+    ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
+  
+}
+
+p.normalisation.independent <- make_results_plot_normalization(normalisation.independent)
+p.normalisation.sequential <- make_results_plot_normalization(normalisation.sequential)
+p.normalisation.independent
+p.normalisation.sequential
 ```
 
 # sanity check: normalisation
 ```{r}
 d.IH.pretraining <- d.IH.canonical %>% 
   mutate(Condition = "pretraining")
-d.IH.normalization.pretraining <- 
-  get_normalization_models_for_plot(d.IH.exposure=d.IH.pretraining,
-                                    prior_kappa.normalization = 10000)
 
-normalization.plot <- d.IH.normalization.pretraining %>%
+m.ia.VOT_f0.IH.pretraining.normalization <- m.ia.VOT_f0.IH.pretraining %>% 
+  nest(posterior = everything()) %>% 
+  crossing(prior_kappa.normalization = 10000) %>% 
+  mutate(Item.Intended_category="/p/",
+         prior_kappa.normalization = factor(prior_kappa.normalization))
+
+d.IH.normalization.pretraining <- 
+  get_normalization_models_for_plot(
+                                    d.IH.exposure=d.IH.pretraining,
+                                    type="independent",
+                                    normalization.prior=m.ia.VOT_f0.IH.pretraining.normalization)
+
+normalization.plot <- d.IH.normalization.pretraining[[10]] %>%
   mutate(prob.p = ifelse(Item.Intended_category=='/p/', response, 1-response),
          normalised_F0 = ifelse(Item.Intended_category=='/p/', 269, 199),
          normalised_F0 = factor(normalised_F0)) %>% 
@@ -436,63 +571,58 @@ normalization.plot <- d.IH.normalization.pretraining %>%
 normalization.plot
 ```
 
-# normalisation plot
+
+
+## Decision bias models
 ```{r}
-make_results_plot_normalization <- function(data){
-  p.results <- 
-    basic_IH_result_plot(data) +
-    facet_grid(
-      . ~ prior_kappa.normalization,
-      labeller = label_bquote(
-        cols = ~kappa[0] == .(as.character(prior_kappa.normalization)))) +   
-    ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
-  
-}
-
-p.normalisation <- make_results_plot_normalization(normalisation)
-p.normalisation
-
-```
-
-## decision bias models
-```{r}
-posterior.lapse_rate.plot <- c(0, 0.005, 0.05, 0.5, 1) 
-beta_pi.plot <- c(0, 0.1, 0.5, 1, 4) 
+posterior.lapse_rate.plot <- c(0, 0.005, 0.05, 0.5, 1)
+beta_pi.plot <- c(0, 0.1, 0.5, 1, 4)
 simulation.control <-
   list(
-    min.simulations = 50, 
-    max.simulations = 100, 
+    min.simulations = 1, 
+    max.simulations = 1, 
     step.simulations = 1, 
     target_accuracy_se = .002)
 
 get_decision_making_models_for_plot <- function(
     d.IH.exposure,
-    lapse_rate = lapse_rate,
-    beta_pi = beta_pi,
-    control = simulation.control
+    decision.bias.prior,
+    type,
+    lapse_rate=posterior.lapse_rate.plot,
+    beta_pi=beta_pi.plot,
+    control=simulation.control
 ) {
   
   if(SET_SEED) set.seed(42007)
-  
   Condition=d.IH.exposure$Condition[[1]]
+  all_decision_bias <- list()
   
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, ".rds")))) {
+  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds")))) {
+    
+    for(i in 1:10){
+      if(i == 1){
+        decision.bias.adaptor <-  decision.bias.prior
+      } else {
+        decision.bias.adaptor <- all_decision_bias[[i-1]]
+      }
+      
+    decision.bias.adaptor <- decision.bias.adaptor %>% 
+        filter(category == "/p/", sim==1) %>% 
+        select(posterior.lapse_rate, beta_pi, posterior) %>% 
+        rename(prior=posterior)
+    
     bias.pred <- 
       d.IH.exposure %>%
       nest(data = -c(Condition, Subject)) %>%
-      crossing(
-        posterior.lapse_rate = lapse_rate, 
-        beta_pi = beta_pi) %>% 
-      crossing(
-        m.ia.VOT_f0.IH %>%
-          filter(prior_kappa == max(prior_kappa), prior_nu == max(prior_nu)) %>%
-          nest(prior = everything())) %>%
+      crossing(prior=decision.bias.adaptor$prior,
+               posterior.lapse_rate=decision.bias.adaptor$posterior.lapse_rate,
+               beta_pi=decision.bias.adaptor$beta_pi)%>%
       group_by(Condition, Subject, posterior.lapse_rate, beta_pi) %>%
       group_modify(
         ~ update_bias_and_categorize_test(
           prior = .x$prior[[1]],
-          lapse_rate = .x$posterior.lapse_rate,
-          beta_pi = .x$beta_pi,
+          lapse_rate = .y$posterior.lapse_rate,
+          beta_pi = .y$beta_pi,
           exposure = .x$data[[1]],
           test = d.IH.test,
           control = control), 
@@ -500,37 +630,55 @@ get_decision_making_models_for_plot <- function(
       mutate_at(vars(starts_with("prior_")), ~ factor(.x)) %>%
       mutate_at(vars(starts_with("prior_")), fct_rev) %>%
       ungroup()
+      
+      all_decision_bias[[i]] <- bias.pred
+    }
     
-    saveRDS(bias.pred, get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, ".rds"))) # save results for bias because it takes a long time to run
+    saveRDS(all_decision_bias, get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds"))) 
   } else {
-    bias.pred <- readRDS(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, ".rds")))
+    all_decision_bias <- readRDS(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds")))
   }
   
-  return(bias.pred) 
+  return(all_decision_bias) 
 }
 
+m.ia.VOT_f0.IH.decision.bias <- m.ia.VOT_f0.IH %>%
+    filter(prior_kappa == max(prior_kappa), prior_nu == max(prior_nu)) %>%
+    nest(posterior = everything()) %>% 
+    crossing(
+      posterior.lapse_rate = c(0, 0.005, 0.05, 0.5, 1), 
+      beta_pi = c(0, 0.1, 0.5, 1, 4)) %>% 
+    mutate(category="/p/", sim=as.double(1))
 
-d.IH.canonical.bias <- 
+d.IH.canonical.bias.independent <- 
   get_decision_making_models_for_plot(
-    d.IH.exposure = d.IH.canonical,
-    lapse_rate = posterior.lapse_rate.plot,
-    beta_pi = beta_pi.plot)
+    d.IH.exposure=d.IH.canonical,
+    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
+    type="independent")
 
-d.IH.neutral.bias <- 
+d.IH.neutral.bias.independent <- 
   get_decision_making_models_for_plot(
     d.IH.exposure = d.IH.neutral,
-    lapse_rate = posterior.lapse_rate.plot,
-    beta_pi = beta_pi.plot)
+    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
+    type="independent")
 
-d.IH.reversed.bias <- 
+d.IH.neutral.bias.seqeuential <- 
+  get_decision_making_models_for_plot(
+    d.IH.exposure = d.IH.neutral,
+    decision.bias.prior=d.IH.canonical.bias.independent[[10]],
+    type="sequential")
+
+d.IH.reversed.bias.independent <- 
   get_decision_making_models_for_plot(
     d.IH.exposure = d.IH.reversed,
-    lapse_rate = posterior.lapse_rate.plot,
-    beta_pi = beta_pi.plot)
+    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
+    type="independent")
 
-d.IH.canonical.bias
-d.IH.neutral.bias
-d.IH.reversed.bias
+d.IH.reversed.bias.seqeuential <- 
+  get_decision_making_models_for_plot(
+    d.IH.exposure = d.IH.reversed,
+    decision.bias.prior=d.IH.neutral.bias.seqeuential[[10]],
+    type="sequential")
 
 avaerage.across.sim <- function(data) {
   data %<>%
@@ -544,12 +692,18 @@ avaerage.across.sim <- function(data) {
   return(data)
 }
 
-d.IH.canonical.prob.p <- avaerage.across.sim(d.IH.canonical.bias)
-d.IH.neutral.prob.p <- avaerage.across.sim(d.IH.neutral.bias)
-d.IH.reversed.prob.p <- avaerage.across.sim(d.IH.reversed.bias)
-decision.bias <- rbind(d.IH.canonical.prob.p,
-                       d.IH.neutral.prob.p,
-                       d.IH.reversed.prob.p)
+d.IH.canonical.prob.p.independent <- avaerage.across.sim(d.IH.canonical.bias.independent[[10]])
+d.IH.neutral.prob.p.independent <- avaerage.across.sim(d.IH.neutral.bias.independent[[10]])
+d.IH.neutral.prob.p.sequential <- avaerage.across.sim(d.IH.neutral.bias.seqeuential[[10]])
+d.IH.reversed.prob.p.independent <- avaerage.across.sim(d.IH.reversed.bias.independent[[10]])
+d.IH.reversed.prob.p.sequential <- avaerage.across.sim(d.IH.reversed.bias.seqeuential[[10]])
+
+decision.bias.independent <- rbind(d.IH.canonical.prob.p.independent,
+                       d.IH.neutral.prob.p.independent,
+                       d.IH.reversed.prob.p.independent)
+decision.bias.sequential <- rbind(d.IH.canonical.prob.p.independent,
+                       d.IH.neutral.prob.p.sequential,
+                       d.IH.reversed.prob.p.sequential)
 ```
 
 
@@ -566,8 +720,10 @@ make_results_plot_decision_making <- function(data){
     ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
 }
 
-p.decision <- make_results_plot_decision_making(decision.bias)
-p.decision
+p.decision.bias.independent <- make_results_plot_decision_making(decision.bias.independent)
+p.decision.bias.sequential <- make_results_plot_decision_making(decision.bias.sequential)
+p.decision.bias.independent
+p.decision.bias.sequential
 ```
 
 # sanity check: decision bias 
