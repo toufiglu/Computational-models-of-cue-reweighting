@@ -6,11 +6,18 @@ date: "2024-01-12"
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
 source("libraries.R")
 source("functions.R")
 ```
 
-```{r}
+```{r load-data}
+f0_reference <- readRDS("f0_reference.rds") #Yiming: I've already renamed all columns that contain f0 using the lowercase. 
+
+VOT_reference <- readRDS("VOT_reference.rds")
+```
+
+```{r get-priors-from-corpus-data}
 cues <- c("VOT_centered", "f0_Mel_centered")
 
 Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>% 
@@ -58,7 +65,7 @@ m.io.VOT_f0.IH <- #make ideal observer for the I&H(2011) experiment
 ```
 
 
-```{r}
+```{r set-experiment}
 n.subject = 1
 example_label = "Cue_reweighting"
 ```
@@ -66,23 +73,23 @@ example_label = "Cue_reweighting"
 ```{r sort exposure data}
 
 get_exposure_data <- function(input_data, Condition, n.subject=1) {
-  input_data %<>% left_join(F0_reference, by='f0') %>% left_join(VOT_reference, by='VOT')
+  input_data %<>% left_join(f0_reference, by='f0') %>% left_join(VOT_reference, by='VOT')
   input_data %<>%
-  select(-VOT, -f0, -f0_Mel) %>% 
-  mutate(Condition=Condition,
-         Item.Category = case_when(
-              VOT %in% c(-20, -10, 0) ~ "/b/",
-              TRUE ~ "/p/")) %>% 
-  rename(VOT = VOT_centered,
-         f0_Mel = F0_centered) %>% 
-  crossing(Subject = factor(1:n.subject)) %>%
-  mutate(Subject = paste(Condition, Subject, sep = "."),
-         Phase = 'training',
-         x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
-  mutate(Frequency=10) %>% 
-  slice(rep(1:n(), each = Frequency)) %>% 
-  mutate(ItemID=as.character(row_number())) %>% 
-  select(-Frequency)
+    mutate(VOT = VOT_centered, 
+         f0_Mel = f0_centered) %>% #Yiming: double check this part: is this you intended to accomplish?
+    select(VOT, f0_Mel) %>% 
+    mutate(Condition = Condition,
+           Item.Category = case_when(
+                VOT %in% c(-20, -10, 0) ~ "/b/",
+                TRUE ~ "/p/")) %>% 
+    crossing(Subject = factor(1:n.subject)) %>%
+    mutate(Subject = paste(Condition, Subject, sep = "."),
+           Phase = 'training',
+           x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
+    mutate(Frequency=10) %>% 
+    slice(rep(1:n(), each = Frequency)) %>% 
+    mutate(ItemID=as.character(row_number())) %>% 
+    select(-Frequency)
   
   return(input_data)
 }
@@ -138,6 +145,7 @@ cues <- c('VOT', 'f0_Mel')
 m.VOT_f0_MVG_canonical <- make_MVG_from_data(data=d.IH.canonical,category="Item.Category",cues=cues)
 m.VOT_f0_MVG_neutral <- make_MVG_from_data(data=d.IH.neutral,category = "Item.Category",cues=cues)
 m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.Category",cues=cues)
+
 ```
 
 ```{r}
@@ -232,13 +240,13 @@ testStim<-rbind(c("vot22","V","f0199"),
                 c("vot22","V","f0269"))
 numTestStim<-dim(testStim)[1]
 plot.data<-data.frame(testStim,stringsAsFactors=F)
-names(plot.data)=c("VOT","V","F0")
+names(plot.data)=c("VOT","V","f0")
 
 plot.data$prob.pretraining <- representation.pretraining$prob.p
 
 gf0 <- plot.data %>%
-  ggplot(aes(x = "pretraining", y = prob.pretraining, group = F0)) + 
-  geom_point(aes(shape = F0), size = 3) +
+  ggplot(aes(x = "pretraining", y = prob.pretraining, group = f0)) + 
+  geom_point(aes(shape = f0), size = 3) +
   theme(legend.text = element_text (size = 12),
         legend.title = element_text(size = 12, face = "bold"),
         plot.title = element_text(size = 12),
@@ -270,7 +278,7 @@ canonical.sanity.check <- tribble(
   mutate(category = case_when(
               VOT %in% c(-20, -10, 0) ~ "/b/",
               TRUE ~ "/p/")) %>% 
-  left_join(F0_reference, by='f0') %>% 
+  left_join(f0_reference, by='f0') %>% 
   left_join(VOT_reference, by='VOT')
 
 test.sanity.check <- tribble(
@@ -280,7 +288,7 @@ test.sanity.check <- tribble(
   10, 230, "/p/",
   10, 290, "/b/"
   ) %>% 
-  left_join(F0_reference, by='f0') %>% 
+  left_join(f0_reference, by='f0') %>% 
   left_join(VOT_reference, by='VOT')
 
 Long.term.knowledge <- Long.term.knowledge %>% 
@@ -304,7 +312,7 @@ raw.cue.plot <- ggplot() +
                                 "Test trials from Idemaru and Holt (2011)" = "green",
                                 "Canonical trials from Idemaru and Holt (2011)" = "red")) +
   labs(color = "") +
-  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor raw VOT and F0 (Mel)") +
+  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor raw VOT and f0 (Mel)") +
   theme(plot.title = element_text(face = "bold"))
   
 
@@ -312,19 +320,19 @@ raw.cue.plot
 ```
 
 
-```{r F0 centered in the canonical data frame refers to f0 Mel centered} 
+```{r f0 centered in the canonical data frame refers to f0 Mel centered} 
 C.cure.cue.plot <- ggplot() +
   stat_ellipse(data = Long.term.knowledge, aes(x = VOT_centered, y = f0_Mel_centered, color = category), 
                geom = "polygon", level = 0.95, alpha = 0.2) +
   geom_point(data = Long.term.knowledge, aes(x = VOT_centered, y = f0_Mel_centered, color = category), size = 0.1) +
-  geom_point(data = test.sanity.check, aes(x = VOT_centered, y = F0_centered, color = "Test trials from Idemaru and Holt (2011)"), size = 1) +
-  geom_point(data = canonical.sanity.check, aes(x = VOT_centered, y = F0_centered, color = "Canonical trials from Idemaru and Holt (2011)"), size = 1) +
+  geom_point(data = test.sanity.check, aes(x = VOT_centered, y = f0_centered, color = "Test trials from Idemaru and Holt (2011)"), size = 1) +
+  geom_point(data = canonical.sanity.check, aes(x = VOT_centered, y = f0_centered, color = "Canonical trials from Idemaru and Holt (2011)"), size = 1) +
   scale_color_manual(values = c("/b/ in Chodroff and Wilson (2018)" = "orange", 
                                 "/p/ in Chodroff and Wilson (2018)" = "blue", 
                                 "Test trials from Idemaru and Holt (2011)" = "green",
                                 "Canonical trials from Idemaru and Holt (2011)" = "red")) +
   labs(color = "") +
-  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor talker normalised VOT and F0 (Mel)") +
+  ggtitle("A comparison between Chodroff and Wilson (2018) \nand Idemaru and Holt (2011)`s canonical/test trials \nfor talker normalised VOT and f0 (Mel)") +
   theme(plot.title = element_text(face = "bold"))
 
 C.cure.cue.plot
