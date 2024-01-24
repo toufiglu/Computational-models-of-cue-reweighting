@@ -9,6 +9,8 @@ knitr::opts_chunk$set(echo = TRUE)
 rm(list = ls())
 source("libraries.R")
 source("functions.R")
+
+RESET_MODELS = F
 ```
 
 ```{r load-data}
@@ -148,7 +150,7 @@ m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.
 
 ```
 
-```{r}
+```{r create-test-data}
 n.subject=1
 d.IH.test <- tibble(
   VOT = 22,
@@ -167,7 +169,7 @@ d.IH.test <- tibble(
   mutate(ItemID=as.character(row_number()))
 ```
 
-```{r}
+```{r set-IO-parameters}
 # set parameter ranges considered by the optimization algorithm
 ## parameters for representations model
 range.prior_kappa <- c(1, 10000)
@@ -226,7 +228,7 @@ get_representation_models_for_plot <- function(
 d.IH.pretraining <- d.IH.canonical %>% 
   mutate(Condition='pretraining')
 
-representation.IH.pretraining <- get_representation_models_for_plot(
+representation.IH.pretraining <- get_representation_models_for_plot( #Yiming: this was some function I wrote specifically for the ASP paper. Did you use that function here or did you write a new function this this name? If so, where is this function?
   d.IH.exposure = d.IH.pretraining,
   prior_kappa = 10000,
   prior_nu = 10000) %>% 

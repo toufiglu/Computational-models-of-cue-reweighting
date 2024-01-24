@@ -1,5 +1,7 @@
 require(tidyverse)
 
+get_path <- function(filename) return(paste0("", filename))
+
 mycall <- function(fn, args) suppressWarnings(exec(fn, !!! args))
 
 get_plot_limits <- function(plot) {
