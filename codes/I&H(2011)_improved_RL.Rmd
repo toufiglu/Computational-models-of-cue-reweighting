@@ -5,6 +5,7 @@ date: "2023-12-25"
 ---
 
 ```{r}
+rm(list = ls())
 library(ndl)
 library(tidyverse)
 library("boot")
@@ -84,8 +85,8 @@ space <- Long.term.knowledge %>%
             VOTslope = 0,
             f0slope = 0)
 
-init.weights <- glm(normalized_prob_p ~
-                  scale(VOT_centered,scale=F)+scale(f0_centered,scale=F),
+init.weights <- glm(normalized_prob_p ~ VOT_centered + f0_centered, # Yiming: centering does not change the glm coefs, but standardizing does
+                #  scale(VOT_centered,scale=F)+scale(f0_centered,scale=F),
                   data=space,
                   family = "binomial"
                   )$coefficients
@@ -99,7 +100,7 @@ parameters <- expand.grid(VOTslopes = VOTslopes,
                         f0slopes = f0slopes,
                         values = 0.01)
 
-parameters$values[parameters$VOTslopes==original_VOTslope & parameters$f0slopes==original_f0slope]<-0.9 # cue weights that conform to the long-term knowledge were initially given a high value while all other possible weights were assgined a low value
+parameters$values[parameters$VOTslopes==original_VOTslope & parameters$f0slopes==original_f0slope]<-0.9 # cue weights that conform to the long-term knowledge were initially given a high value while all other possible weights were assigned a low value
 ```
 
 # training data transformation
@@ -161,6 +162,25 @@ get_exposure_data <- function(training, talker) {
     select(-Frequency)
   }
 
+
+####
+canonical %<>%
+  distinct()
+
+tr.canonical <- canonical %>%
+left_join(f0_reference, by='f0') %>%
+    left_join(VOT_reference, by='VOT') %>% 
+    select(f0_centered, VOT_centered) %>% 
+    mutate(Talker='talker',
+           Outcomes=ifelse(VOT_centered %in% c(-8, 2, 12), "b", "p"), # assumption: the label was determined based on the VOT values
+           Frequency=1,
+           f0_centered=f0_centered-mean(Long.term.knowledge$f0_centered),
+           VOT_centered=VOT_centered-mean(Long.term.knowledge$VOT_centered),
+           Cues = paste(paste0("vot", VOT_centered), paste0("f0", f0_centered), sep = "_")) %>%
+    slice(rep(1:n(), each = Frequency)) %>% 
+    select(-Frequency) 
+
+####
 canonical <- get_exposure_data(training=canonical, talker="canonical")
 neutral <- get_exposure_data(training=neutral, talker="neutral")
 reversed <- get_exposure_data(training=reversed, talker="reversed")
@@ -177,20 +197,64 @@ test <- tribble (
   
 ```
 
+```{r debug, eval = FALSE}
+x = seq(0, 80, by = 5) # consider these values as 'VOT_centered'
+x_glm <- x - mean(Long.term.knowledge$VOT_centered)
+y = inv.logit(x_glm *as.numeric(init.weights[2])) # the weight applied here primarily changes the slope of the predicted categorization curve; the influence on the boundary (50%-50% point) is small
+data = data.frame(cbind(x,x_glm,y))
+
+# visualize the glm prediction when f0 weight is set to zero
+data %>%
+  ggplot(aes(x = x, y = y)) + 
+  geom_line() +
+  scale_x_continuous(breaks = seq(0,80,5)) +
+  scale_y_continuous(breaks = seq(0,1,.1)) +
+  xlab("VOT_centered (corresonding to this column in VOT_reference)") +
+  ylab("normalized_prob_p") +
+  geom_vline(xintercept = 22, linetype = "dashed") 
+
+
+test0 <- tribble (
+  ~VOT, ~f0,
+   0, 230,
+   0, 290,
+  10, 230,
+  10, 290,
+  20, 230,
+  20, 290,
+  30, 230,
+  30, 290,
+  40, 230,
+  40, 290,
+) %>% 
+  left_join(f0_reference, by='f0') %>%
+  left_join(VOT_reference, by='VOT') %>% 
+  mutate(f0_centered=f0_centered-mean(Long.term.knowledge$f0_centered),
+         VOT_centered=VOT_centered-mean(Long.term.knowledge$VOT_centered))
+
+test <- test0
+```
+
+
 # sanity check
 ```{r sanity-check}
-initial.test.results <- test %>% 
+
+initial.test.results <- test %>%
   mutate(glm_results = VOT_centered*as.numeric(init.weights[2])+
            f0_centered*as.numeric(init.weights[3]),
          results = inv.logit(glm_results)
   ) %>% 
-  left_join(f0_reference, by='f0') %>% 
+  left_join(f0_reference, by= c('f0')) %>% 
   rename(normalised_f0 = f0_centered.y) %>% 
-  mutate(normalised_f0 = factor(normalised_f0))
+  mutate(normalised_f0 = factor(normalised_f0)) %>%
+  left_join(VOT_reference, by= c('VOT')) %>% 
+  rename(normalised_VOT = VOT_centered.y) %>% 
+  mutate(normalised_VOT = factor(normalised_VOT))
 
 initial.test.results 
 
 initial <- initial.test.results %>%
+  filter(VOT == 10) %>%
   ggplot(aes(x = "pretraining", y = results, group = f0)) +
   geom_point(aes(shape = normalised_f0), size = 3) +
   theme(legend.text = element_text (size = 12),
@@ -201,8 +265,7 @@ initial <- initial.test.results %>%
         axis.title = element_text(size = 12, face = "bold")) +
   xlab("Condition") + ylab("Probability of /p/ responses") +
   coord_cartesian(ylim = c(0, 1))
-initial # Xin: why so biased towards /b/?
-
+initial 
 ```
 
 # Reinforcement function
@@ -354,6 +417,7 @@ ggplot(space, aes(x = VOT_centered, fill = Outcomes)) +
     labs(title = "Density Plot of VOT for 'b' and 'p'",
          x = "VOT",
          y = "Density") +
+  geom_vline(xintercept = 22, linetype = "dashed") +
     theme_minimal()
 ```
 
