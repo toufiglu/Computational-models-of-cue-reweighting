@@ -105,7 +105,7 @@ get_exposure_data <- function(input_data, Condition, n.subject=1) {
               TRUE ~ "/p/")) %>%
   select(-VOT, -f0, -f0_Mel) %>%
   rename(VOT = VOT_centered,
-         f0_Mel = F0_centered) %>% 
+         f0_Mel = f0_centered) %>% 
   crossing(Subject = factor(1:n.subject)) %>%
   mutate(Subject = paste(Condition, Subject, sep = "."),
          Phase = 'training',
@@ -214,7 +214,8 @@ basic_IH_result_plot <- function(data) {
         legend.text = element_text (size = 7),
         legend.title = element_text(size = 7, face = "bold"),
         plot.title = element_text(size = 7),
-        panel.grid.major.x = element_blank())
+        panel.grid.major.x = element_blank(),
+        strip.text.y = element_text(size=5))
       )
 }
 
@@ -251,7 +252,6 @@ get_representation_models_for_plot <- function(
 ){
   
   all_representations <- list()
-  browser()
   Condition = d.IH.exposure$Condition[[1]]
   if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))){
     
