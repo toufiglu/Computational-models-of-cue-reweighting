@@ -9,7 +9,7 @@ knitr::opts_chunk$set(echo = TRUE)
 rm(list = ls())
 source("libraries.R")
 source("functions.R")
-
+library(mvtnorm)
 RESET_MODELS = F
 ```
 
@@ -338,5 +338,21 @@ C.cure.cue.plot <- ggplot() +
   theme(plot.title = element_text(face = "bold"))
 
 C.cure.cue.plot
+```
+
+# Figure 1
+```{r}
+raw.cue.plot <- ggplot() +
+  stat_ellipse(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), 
+               geom = "polygon", level = 0.95, alpha = 0.2) +
+  geom_point(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), size = 0.1) +
+  scale_color_manual(values = c("/b/" = "red", 
+                                "/p/" = "blue")) +
+  labs(color = "",
+       caption = "Figure 1. /b/ and /p/ tokens from Chodroff and Wilson (2018) \nare ploted alongside VOT and F0. VOT is a reliable cue in distinguishing\n between the two categories. F0 is much less so.") +
+  theme(plot.title = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0.5, size = rel(1.1)))
+
+raw.cue.plot
 ```
 
