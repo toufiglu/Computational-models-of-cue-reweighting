@@ -5,6 +5,7 @@ date: "2023-12-08"
 ---
 
 ```{r setup, include=FALSE}
+rm(list = ls())
 library(ndl)
 library(tidyverse)
 library("boot")
@@ -314,9 +315,10 @@ neutral <- neutral %>%
 train = neutral
 train$Cues<-as.character(train$Cues)
 train$Outcomes<-as.character(train$Outcomes)
-f0230.neutral<-mat.or.vec(maxRep,2)
-f0290.neutral<-mat.or.vec(maxRep,2)
-
+f0230.neutral.independent<-mat.or.vec(maxRep,2)
+f0290.neutral.independent<-mat.or.vec(maxRep,2)
+f0230.neutral.sequential<-mat.or.vec(maxRep,2)
+f0290.neutral.sequential<-mat.or.vec(maxRep,2)
 
 for (nRep in 1:maxRep)
 {
@@ -324,8 +326,8 @@ for (nRep in 1:maxRep)
     train<-train[sample(nrow(train)),]
     if (nRep==1) {w<-Rescorla(train, rate=0.1, w=w.canonical)}
     else {w<-(w*(nRep-1)+Rescorla(train,rate=0.1,w=w.canonical))/nRep}
-    f0230.neutral[nRep,]<-w["normalised.f0199",c("b","p")]
-    f0290.neutral[nRep,]<-w["normalised.f0269",c("b","p")]
+    f0230.neutral.sequential[nRep,]<-w["normalised.f0199",c("b","p")]
+    f0290.neutral.sequential[nRep,]<-w["normalised.f0269",c("b","p")]
 
     #activatons of p and b for each test stimulus
     for (i in 1:numTestStim)
@@ -346,10 +348,45 @@ act.b[act.b>1]<-1
 
 #Calculating the mean activation of p and b across replications
 #Putting it into the plot data
-plot.data$mean.act.p_neutral<-apply(act.p,1,"mean")
-plot.data$sd.act.p_neutral<-apply(act.p,1,"sd")
-plot.data$mean.act.b_neutral<-apply(act.b,1,"mean")
-plot.data$sd.act.b_neutral<-apply(act.b,1,"sd")
+plot.data$mean.act.p_neutral_sequential<-apply(act.p,1,"mean")
+plot.data$sd.act.p_neutral_sequential<-apply(act.p,1,"sd")
+plot.data$mean.act.b_neutral_sequential<-apply(act.b,1,"mean")
+plot.data$sd.act.b_neutral_sequential<-apply(act.b,1,"sd")
+
+
+# independent models
+for (nRep in 1:maxRep)
+{
+    
+    train<-train[sample(nrow(train)),]
+    if (nRep==1) {w<-Rescorla(train, rate=0.1, w=w.pre)}
+    else {w<-(w*(nRep-1)+Rescorla(train,rate=0.1,w=w.pre))/nRep}
+    f0230.neutral.independent[nRep,]<-w["normalised.f0199",c("b","p")]
+    f0290.neutral.independent[nRep,]<-w["normalised.f0269",c("b","p")]
+
+    #activatons of p and b for each test stimulus
+    for (i in 1:numTestStim)
+    {
+    act.p[i,nRep]<-sum(w[testStim[i,],"p"])  
+    act.b[i,nRep]<-sum(w[testStim[i,],"b"])   
+    }
+    
+}
+
+#limit activations to be between 0 and 1
+act.p[act.p<0]<-0
+act.b[act.b<0]<-0
+act.p[act.p>1]<-1
+act.b[act.b>1]<-1
+
+#Calculating the mean activation of p and b across replications
+#Putting it into the plot data
+plot.data$mean.act.p_neutral_independent<-apply(act.p,1,"mean")
+plot.data$sd.act.p_neutral_independent<-apply(act.p,1,"sd")
+plot.data$mean.act.b_neutral_independent<-apply(act.b,1,"mean")
+plot.data$sd.act.b_neutral_independent<-apply(act.b,1,"sd")
+
+
 ```
 
 
@@ -391,8 +428,10 @@ reversed <- reversed %>%
 train = reversed
 train$Cues<-as.character(train$Cues)
 train$Outcomes<-as.character(train$Outcomes)
-f0230.reversed<-mat.or.vec(maxRep,2)
-f0290.reversed<-mat.or.vec(maxRep,2)
+f0230.reversed.sequential<-mat.or.vec(maxRep,2)
+f0290.reversed.sequential<-mat.or.vec(maxRep,2)
+f0230.reversed.independent<-mat.or.vec(maxRep,2)
+f0290.reversed.independent<-mat.or.vec(maxRep,2)
 
 
 for (nRep in 1:maxRep)
@@ -401,8 +440,8 @@ for (nRep in 1:maxRep)
     train<-train[sample(nrow(train)),]
     if (nRep==1) {w<-Rescorla(train, rate=0.1, w=w.neutral)}
     else {w<-(w*(nRep-1)+Rescorla(train, rate=0.1, w=w.neutral))/nRep}
-    f0230.reversed[nRep,]<-w["normalised.f0199",c("b","p")]
-    f0290.reversed[nRep,]<-w["normalised.f0269",c("b","p")]
+    f0230.reversed.sequential[nRep,]<-w["normalised.f0199",c("b","p")]
+    f0290.reversed.sequential[nRep,]<-w["normalised.f0269",c("b","p")]
 
     #activatons of p and b for each test stimulus
     for (i in 1:numTestStim)
@@ -423,28 +462,83 @@ act.b[act.b>1]<-1
 
 #Calculating the mean activation of p and b across replications
 #Putting it into the plot data
-plot.data$mean.act.p_reversed<-apply(act.p,1,"mean")
-plot.data$sd.act.p_reversed<-apply(act.p,1,"sd")
-plot.data$mean.act.b_reversed<-apply(act.b,1,"mean")
-plot.data$sd.act.b_reversed<-apply(act.b,1,"sd")
+plot.data$mean.act.p_reversed_sequential<-apply(act.p,1,"mean")
+plot.data$sd.act.p_reversed_sequential<-apply(act.p,1,"sd")
+plot.data$mean.act.b_reversed_sequential<-apply(act.b,1,"mean")
+plot.data$sd.act.b_reversed_sequential<-apply(act.b,1,"sd")
+
+
+# independent models
+for (nRep in 1:maxRep)
+{
+    
+    train<-train[sample(nrow(train)),]
+    if (nRep==1) {w<-Rescorla(train, rate=0.1, w=w.pre)}
+    else {w<-(w*(nRep-1)+Rescorla(train, rate=0.1, w=w.pre))/nRep}
+    f0290.reversed.independent[nRep,]<-w["normalised.f0199",c("b","p")]
+    f0290.reversed.independent[nRep,]<-w["normalised.f0269",c("b","p")]
+
+    #activatons of p and b for each test stimulus
+    for (i in 1:numTestStim)
+    {
+    act.p[i,nRep]<-sum(w[testStim[i,],"p"])  
+    act.b[i,nRep]<-sum(w[testStim[i,],"b"])   
+    }
+    
+}
+
+#limit activations to be between 0 and 1
+act.p[act.p<0]<-0
+act.b[act.b<0]<-0
+act.p[act.p>1]<-1
+act.b[act.b>1]<-1
+
+#Calculating the mean activation of p and b across replications
+#Putting it into the plot data
+plot.data$mean.act.p_reversed_independent<-apply(act.p,1,"mean")
+plot.data$sd.act.p_reversed_independent<-apply(act.p,1,"sd")
+plot.data$mean.act.b_reversed_independent<-apply(act.b,1,"mean")
+plot.data$sd.act.b_reversed_independent<-apply(act.b,1,"sd")
+
 ```
 
 
-# plot
+# Plot for both independent and sequential models
 ```{r}
 plot.data$prob.canonical<-plot.data$mean.act.p_canonical/(plot.data$mean.act.p_canonical+plot.data$mean.act.b_canonical)
-plot.data$prob.reversed<-plot.data$mean.act.p_reversed/(plot.data$mean.act.p_reversed+plot.data$mean.act.b_reversed)
-plot.data$prob.neutral<-plot.data$mean.act.p_neutral/(plot.data$mean.act.p_neutral+plot.data$mean.act.b_neutral)
+
+plot.data$prob.reversed.independent<-plot.data$mean.act.p_reversed_independent/(plot.data$mean.act.p_reversed_independent+plot.data$mean.act.b_reversed_independent)
+
+plot.data$prob.reversed.sequential<-plot.data$mean.act.p_reversed_sequential/(plot.data$mean.act.p_reversed_sequential+plot.data$mean.act.b_reversed_sequential)
+
+
+plot.data$prob.neutral.independent<-plot.data$mean.act.p_neutral_independent/(plot.data$mean.act.p_neutral_independent+plot.data$mean.act.b_neutral_independent)
+plot.data$prob.neutral.sequential<-plot.data$mean.act.p_neutral_sequential/(plot.data$mean.act.p_neutral_sequential+plot.data$mean.act.b_neutral_sequential)
 
 ggfodata <- plot.data %>%
   group_by(F0) %>%
   summarise_at(grep("prob", names(plot.data), value = TRUE), mean) %>%
   gather(value = "meanfo", key = "condition", -F0) %>%
-  mutate(F0 = gsub("f0", "", F0))
+  mutate(Levels = ifelse(F0 == "normalised.f0199", "Low F0", "High F0"),
+         condition = gsub("prob\\.", "", condition))
 
-gf0 <- ggfodata %>%
-  ggplot(aes(x = condition, y = meanfo, group = F0)) + 
-  geom_point(aes(shape = F0), size = 3) +
+ggf0.independent <- ggfodata %>% 
+  filter(condition =="canonical" | grepl("\\.independent", condition)) %>% 
+  mutate(condition = gsub("\\.independent", "", condition),
+         model = "independent")
+
+ggf0.sequential <- ggfodata %>% 
+  filter(condition =="canonical" | grepl("\\.sequential", condition)) %>% 
+  mutate(condition = gsub("\\.sequential", "", condition),
+         model = "sequential")
+  
+ggf0 <- rbind(ggf0.independent, ggf0.sequential)
+
+gf0 <- ggf0 %>%
+  ggplot(aes(x = condition, y = meanfo, group = Levels, color = Levels)) + 
+  geom_point(aes(shape = Levels), size = 3) +
+  scale_color_manual(values = c("Low F0" = "red", "High F0" = "blue")) +
+  facet_grid(~ model) +
   theme(legend.text = element_text (size = 12),
         legend.title = element_text(size = 12, face = "bold"),
         plot.title = element_text(size = 12),
@@ -454,7 +548,9 @@ gf0 <- ggfodata %>%
   xlab ("Condition") + ylab("Probability of /p/ responses") +
   coord_cartesian(ylim = c(0,1))
 
+
 gf0
+
 
 ```
 
