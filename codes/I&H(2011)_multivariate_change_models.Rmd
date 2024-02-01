@@ -105,7 +105,7 @@ get_exposure_data <- function(input_data, Condition, n.subject=1) {
               TRUE ~ "/p/")) %>%
   select(-VOT, -f0, -f0_Mel) %>%
   rename(VOT = VOT_centered,
-         f0_Mel = f0_centered) %>% 
+         f0_Mel = F0_centered) %>% 
   crossing(Subject = factor(1:n.subject)) %>%
   mutate(Subject = paste(Condition, Subject, sep = "."),
          Phase = 'training',
@@ -195,10 +195,11 @@ d.IH.test <- tibble(
 ```{r}
 basic_IH_result_plot <- function(data) {
   data %>%
-    ggplot(aes(x = Condition, y = prob.p, group = normalised_F0)) +
+    mutate(Levels = ifelse(normalised_F0 == 199, "Low f0", "High f0")) %>% 
+    ggplot(aes(x = Condition, y = prob.p, group = Levels)) +
     list(
-      geom_point(position = position_dodge(width = 0.2), size = 1, aes(shape = normalised_F0, color = normalised_F0)),
-      scale_color_manual(values = c("red", "blue")),
+      geom_point(size = 1, aes(color = Levels)),
+      scale_color_manual(values = c("orange", "blue")),
       coord_cartesian(ylim = c(0, 1.1)),
       scale_y_continuous(breaks = c(0, 0.5, 1)),
       scale_x_discrete(labels= c("canonical", "neutral", "reversed")),
@@ -207,15 +208,18 @@ basic_IH_result_plot <- function(data) {
       theme(
         legend.key.height= duo.panel.key,
         legend.position = "top", 
-        axis.text.x = element_text(angle = 22.5, hjust = 1, size = 7),
-        axis.text.y = element_text(size = 7),
-        axis.title.x = element_text(size = 7, face = "bold"),
-        axis.title.y = element_text(size = 7, face = "bold"),
-        legend.text = element_text (size = 7),
-        legend.title = element_text(size = 7, face = "bold"),
-        plot.title = element_text(size = 7),
-        panel.grid.major.x = element_blank(),
-        strip.text.y = element_text(size=5))
+        axis.text.x = element_text(angle = 22.5, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 20),
+        strip.text.x = element_text(size=15),
+        strip.text.y = element_text(size=15),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
       )
 }
 
@@ -335,7 +339,8 @@ representation.sequential <- rbind(representation.IH.canonical.independent[[10]]
 ```{r}
 categories.IH <- c("/b/", "/p/")
 make_results_plot_representations <- function(data) {
-  p.results <- 
+  data %<>% filter(prior_kappa %in% c(16,64,256) & prior_nu %in% c(16,64,256))
+  p.results <-
     basic_IH_result_plot(data) +
     facet_grid(
       prior_nu ~ prior_kappa,

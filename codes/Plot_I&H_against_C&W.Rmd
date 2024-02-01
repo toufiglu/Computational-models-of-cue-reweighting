@@ -42,35 +42,65 @@ Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>%
   mutate_at(
       c("VOT", "f0_Mel"),
       list("centered" = function(x) apply_ccure(x, data = .)))
-  
-prior_marginal_VOT_f0_stats <-
-  Long.term.knowledge %>%
-  group_by(Talker) %>%
-  summarise(across(c(VOT, f0_Mel), mean)) %>% 
-  ungroup() %>%
-  summarise(
-    x_mean = list(c(VOT = mean(VOT), f0 = mean(f0_Mel))),
-    x_var_VOT = var(VOT),
-    x_var_f0 = var(f0_Mel),
-    x_cov = list(cov(cbind(VOT, f0_Mel))))
 
-m.VOT_f0_MVG <-
-  make_MVG_from_data(
-  data = Long.term.knowledge,
-  category = "category",
-  cues = cues)
-
-m.io.VOT_f0.IH <- #make ideal observer for the I&H(2011) experiment
-  m.VOT_f0_MVG  %>%
-  make_stop_VOTf0_ideal_observer() %>% 
-  arrange(category)
 ```
 
 
-```{r set-experiment}
-n.subject = 1
-example_label = "Cue_reweighting"
+# Figure 1
+```{r}
+raw.cue.plot <- ggplot() +
+  stat_ellipse(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), 
+               geom = "polygon", level = 0.95, alpha = 0.2) +
+  geom_point(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), size = 0.1) +
+  scale_color_manual(values = c("/b/" = "orange", 
+                                "/p/" = "blue")) +
+  labs(color = "") +
+  theme(plot.title = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0.5, size = rel(1.1)),
+        legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
+
+raw.cue.plot
 ```
+# Figure 2
+```{r}
+I.H.Figure5 <- tribble(
+  ~F0, ~condition, ~prob.p, ~Levels,
+  290, "canonical", 0.75, "High F0",
+  290, "neutral", 0.70, "High F0",
+  290, "reversed", 0.56, "High F0",
+  230, "canonical", 0.31, "Low F0",
+  230, "neutral", 0.28, "Low F0",
+  230, "reversed", 0.45, "Low F0"
+) %>% 
+  mutate(Levels = as.factor(Levels))
+
+Figure2 <- I.H.Figure5 %>%
+  ggplot(aes(x = condition, y = prob.p, group = Levels, color = Levels)) + 
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Low F0" = "orange", "High F0" = "blue")) +
+  theme(legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25)) +
+  xlab ("Condition") + ylab("Probability of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+
+Figure2
+
+```
+
 
 ```{r sort exposure data}
 
@@ -143,98 +173,6 @@ d.IH.canonical <- get_exposure_data(canonical, Condition='canonical')
 d.IH.neutral <- get_exposure_data(neutral, Condition='neutral')
 d.IH.reversed <- get_exposure_data(reversed, Condition='reversed')
 
-cues <- c('VOT', 'f0_Mel')
-m.VOT_f0_MVG_canonical <- make_MVG_from_data(data=d.IH.canonical,category="Item.Category",cues=cues)
-m.VOT_f0_MVG_neutral <- make_MVG_from_data(data=d.IH.neutral,category = "Item.Category",cues=cues)
-m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.Category",cues=cues)
-
-```
-
-```{r create-test-data}
-n.subject=1
-d.IH.test <- tibble(
-  VOT = 22,
-  f0_Mel = c(199,269)
-) %>% 
-  mutate(Phase='test',
-         Item.Category=NA,
-         Item.Intended_category = case_when(
-           f0_Mel==199 ~ '/b/',
-           TRUE ~ '/p/'),
-         x=map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y)),
-         Item.Type='test',
-         Block=1) %>% 
-  crossing(Condition='test') %>% 
-  mutate(Subject=paste(Condition, n.subject, sep = ".")) %>% 
-  mutate(ItemID=as.character(row_number()))
-```
-
-```{r set-IO-parameters}
-# set parameter ranges considered by the optimization algorithm
-## parameters for representations model
-range.prior_kappa <- c(1, 10000)
-range.prior_nu <- c(4, 10000) 
-## parameters for bias model
-range.lapse_rate <- c(0, 1)
-range.beta_pi <- c(10^-3, 10^2)
-
-## parameters for normalization model
-range.prior_kappa.normalization <- c(1, 10000)
-```
-
-#representation models
-```{r find_best_model.representations.IH, message=FALSE, warning=FALSE}
-prior_kappa.plot = 4^(1:5) # specify what parameters to plot
-prior_nu.plot = 4^(1:5) 
-
-get_representation_models_for_plot <- function(
-    prior_kappa = prior_kappa.plot,
-    prior_nu = prior_nu.plot,
-    d.IH.exposure
-){
-  
-  Condition=d.IH.exposure$Condition[[1]]
-  
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))){
-    m.ia.VOT_f0.IH.plot_sample <-
-      crossing(
-        prior_kappa = prior_kappa,
-        prior_nu = prior_nu) %>%
-      rowwise() %>%
-      mutate(ideal_adaptor = map2(prior_kappa, prior_nu, ~ make_stop_VOTf0_ideal_adaptor(m = m.io.VOT_f0.IH, kappa = .x, nu = .y))) %>%
-      unnest(ideal_adaptor) %>%
-      arrange(category)
-    
-    representations.pred <- 
-      d.IH.exposure %>%
-      nest(data = -c(Condition, Subject)) %>%
-      crossing(
-        m.ia.VOT_f0.IH.plot_sample %>%
-          nest(prior = -c(prior_kappa, prior_nu))) %>%
-      group_by(Condition, Subject, prior_kappa, prior_nu) %>%
-      group_modify(~ update_representations_and_categorize_test(prior = .x$prior[[1]], exposure = .x$data[[1]], test = d.IH.test)) %>%
-      mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
-      mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-      ungroup()
-    
-    saveRDS(representations.pred, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds"))) #
-  } else {
-    representations.pred <- readRDS(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, ".rds")))
-  }
-  
-  return(representations.pred)
-}
-
-d.IH.pretraining <- d.IH.canonical %>% 
-  mutate(Condition='pretraining')
-
-representation.IH.pretraining <- get_representation_models_for_plot( #Yiming: this was some function I wrote specifically for the ASP paper. Did you use that function here or did you write a new function this this name? If so, where is this function?
-  d.IH.exposure = d.IH.pretraining,
-  prior_kappa = 10000,
-  prior_nu = 10000) %>% 
-  mutate(prob.p = ifelse(category=='/p/', response, 1-response))
-
-representation.pretraining
 ```
 
 ```{r}
@@ -243,23 +181,10 @@ testStim<-rbind(c("vot22","V","f0199"),
 numTestStim<-dim(testStim)[1]
 plot.data<-data.frame(testStim,stringsAsFactors=F)
 names(plot.data)=c("VOT","V","f0")
-
-plot.data$prob.pretraining <- representation.pretraining$prob.p
-
-gf0 <- plot.data %>%
-  ggplot(aes(x = "pretraining", y = prob.pretraining, group = f0)) + 
-  geom_point(aes(shape = f0), size = 3) +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold"))+
-  xlab ("Condition") + ylab("Posterior probability for p") +
-  coord_cartesian(ylim = c(0,1))
-
-gf0
 ```
+
+
+
 
 # plot the distribution of C&W in comparison with canonical trials
 ```{r}
@@ -300,7 +225,7 @@ Long.term.knowledge <- Long.term.knowledge %>%
 
 ```
 
-
+# canonical is not canonical: not used for now.
 
 ```{r}
 raw.cue.plot <- ggplot() +
@@ -338,52 +263,5 @@ C.cure.cue.plot <- ggplot() +
   theme(plot.title = element_text(face = "bold"))
 
 C.cure.cue.plot
-```
-
-# Figure 1
-```{r}
-raw.cue.plot <- ggplot() +
-  stat_ellipse(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), 
-               geom = "polygon", level = 0.95, alpha = 0.2) +
-  geom_point(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), size = 0.1) +
-  scale_color_manual(values = c("/b/" = "red", 
-                                "/p/" = "blue")) +
-  labs(color = "",
-       caption = "Figure 1. /b/ and /p/ tokens from Chodroff and Wilson (2018) \nare ploted alongside VOT and F0. VOT is a reliable cue in distinguishing\n between the two categories. F0 is much less so.") +
-  theme(plot.title = element_text(face = "bold"),
-        plot.caption = element_text(hjust = 0.5, size = rel(1.1)))
-
-raw.cue.plot
-```
-
-```{r}
-I.H.Figure5 <- tribble(
-  ~F0, ~condition, ~prob.p, ~Levels,
-  290, "canonical", 0.75, "High F0",
-  290, "neutral", 0.70, "High F0",
-  290, "reversed", 0.56, "High F0",
-  230, "canonical", 0.31, "Low F0",
-  230, "neutral", 0.28, "Low F0",
-  230, "reversed", 0.45, "Low F0"
-) %>% 
-  mutate(Levels = as.factor(Levels))
-
-Figure2 <- I.H.Figure5 %>%
-  ggplot(aes(x = condition, y = prob.p, group = Levels, color = Levels)) + 
-  geom_point(aes(shape = Levels), size = 3) +
-  scale_color_manual(values = c("Low F0" = "red", "High F0" = "blue")) +
-  labs(caption = "The results of /b/-/p/ from Experiment 1 in Idemaru and Holt (2011)") +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold"),
-        plot.caption = element_text(hjust = 0.5)) +
-  xlab ("Condition") + ylab("Probability of /p/ responses") +
-  coord_cartesian(ylim = c(0,1))
-
-Figure2
-
 ```
 

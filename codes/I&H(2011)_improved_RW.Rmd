@@ -534,22 +534,25 @@ ggf0.sequential <- ggfodata %>%
   
 ggf0 <- rbind(ggf0.independent, ggf0.sequential)
 
-gf0 <- ggf0 %>%
+Figure3 <- ggf0 %>%
   ggplot(aes(x = condition, y = meanfo, group = Levels, color = Levels)) + 
-  geom_point(aes(shape = Levels), size = 3) +
-  scale_color_manual(values = c("Low F0" = "red", "High F0" = "blue")) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Low F0" = "orange", "High F0" = "blue")) +
   facet_grid(~ model) +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold"))+
+  theme(legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25),
+        strip.text.x = element_text(size = 20, face = "bold")) +
   xlab ("Condition") + ylab("Probability of /p/ responses") +
   coord_cartesian(ylim = c(0,1))
 
 
-gf0
+Figure3
 
 
 ```
