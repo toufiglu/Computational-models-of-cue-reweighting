@@ -1,30 +1,137 @@
 ---
-title: "bivariate_model"
+title: "The ideal adaptor and the normalization change models"
 output: html_document
 date: "2023-12-30"
 ---
-
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 source("libraries.R")
 source("functions.R")
-F0_reference <- readRDS("F0_reference.rds")
-VOT_reference <- readRDS("VOT_reference.rds")
-RESET_MODELS = F
-get_path <- function(filename) return(paste0("", filename))
-result.panel.size = 0.98
-duo.panel.key <- unit(0.2, 'cm')
-SET_SEED = T
+source("parameters.R")
 ```
 
-# Pretraining
-```{r filter pretraining data from C&W and get ideal observer}
-cues <- c("VOT_centered", "f0_Mel_centered")
-prior_kappa.plot = 4^(1:6) # specify what parameters to plot
-prior_nu.plot = 4^(1:6) 
+# Load functions: functions for packaging, processing, and visualzing data
+```{r load functions to be used below}
+# format exposure data
+get_exposure_data <- function(input_data, Condition, n.subject=1) {
+  input_data <- input_data %>%
+    left_join(f0_reference, by='f0') %>%
+    left_join(VOT_reference, by='VOT') %>% 
+    mutate(Condition=Condition,
+           Item.Type=Condition,
+           Item.Category = case_when(
+                VOT %in% c(-20, -10, 0) ~ "/b/",
+                TRUE ~ "/p/")) %>%
+    dplyr::select(-VOT, -f0, -f0_Mel) %>%
+    rename(VOT = VOT_centered,
+           f0_Mel = f0_centered) %>% 
+    crossing(Subject = factor(1:n.subject)) %>%
+    mutate(Subject = paste(Condition, Subject, sep = "."),
+           Phase = 'training',
+           x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
+    mutate(ItemID=as.character(row_number()))
+  
+  names(input_data$x) <- NULL
+  
+  return(input_data)
+}
 
-Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>%
-  filter(category %in% c('/b/', '/p/')) %>%
+# a function used to deal with sequential models
+model_for_sequential <- function(representation.model) {
+  representation.model <- representation.model %>% 
+        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
+        filter(Item.Intended_category == "/p/") %>% 
+        select(prior_kappa, prior_nu, posterior) %>%
+        unnest(posterior)
+}
+
+# the following two functions will be used for processing results of the ideal adaptor and the normalization change model.
+rep_processing <- function(variable) {
+  data <- get(variable, envir = .GlobalEnv)
+  results <- 
+    data %>%
+    bind_rows() %>% 
+    mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
+           normalised_f0 = ifelse(Item.Intended_category =="/p/", 269, 199),
+           normalised_f0 = factor(normalised_f0)) %>% 
+    group_by(Condition, prior_kappa, prior_nu, Item.Intended_category, normalised_f0) %>% # normalised_f0 is essentially determined by Item.Intended_category. It is included here to make sure that the column remains, which will be used for plotting below.
+    summarise(mean_prob_p = mean(prob.p), .groups = 'drop') %>% 
+    rename(prob.p=mean_prob_p)
+  
+  return(results)
+}
+
+norm_processing <- function(variable) {
+  data <- get(variable, envir = .GlobalEnv)
+  results <- 
+    data %>%
+    bind_rows() %>% 
+    mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
+           normalised_f0 = ifelse(Item.Intended_category =="/p/", 269, 199),
+           normalised_f0 = factor(normalised_f0)) %>% 
+    group_by(Condition, prior_kappa.normalization, Item.Intended_category, normalised_f0) %>% 
+    summarise(mean_prob_p = mean(prob.p), .groups = 'drop') %>% 
+    rename(prob.p=mean_prob_p)
+  
+  return(results)
+}
+
+# visualization function
+basic_IH_result_plot <- function(data) {
+  data %>%
+    mutate(Levels = ifelse(normalised_f0 == 199, "Low f0", "High f0")) %>% 
+    ggplot(aes(x = block, y = prob.p, group = Levels)) +
+    list(
+      geom_point(size = 2, aes(color = Levels)),
+      scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")),
+      coord_cartesian(ylim = c(0, 1.1)),
+      scale_y_continuous(breaks = c(0, 0.5, 1)),
+      scale_x_discrete(labels= c("canonical", "neutral", "reversed")),
+      xlab("Exposure condition"),
+      ylab("Proportion of /p/ responses"),
+      theme(
+        legend.key.height= duo.panel.key,
+        legend.position = "top", 
+        axis.text.x = element_text(angle=22.5, hjust=1, size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 20),
+        strip.text.x = element_text(size= 20, face = "bold"),
+        strip.text.y = element_text(size= 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
+      )
+}
+```
+
+# Pretraining and normalization of all tokens used
+```{r filter pretraining data from C&W and get ideal observer}
+training_trials <- expand.grid(
+    VOT = c(-20, -10, 0, 20, 30, 40),
+    f0 = seq(220, 300, by=10),
+    Talker = "experiment"
+    ) %>% 
+  mutate(category = case_when(
+      VOT %in% c(-20, -10, 0) ~ "b",
+      TRUE ~ "p"))
+
+test_trials <- data.frame(
+  VOT = 10,
+  f0 = c(230, 230, 290, 290),
+  Talker = 'experiment',
+  category = c('b', 'p', 'b', 'p')
+) 
+
+experiment_pretraining <- rbind(training_trials, test_trials) %>% 
+  mutate(f0_Mel = phonR::normMel(f0))
+
+Long_term_knowledge <- readRDS("d.chodroff_wilson.rds") %>%
+  filter(poa == "/b/-/p/") %>%
   droplevels() %>% 
   filter(
     between(VOT, mean(VOT) - 3 * sd(VOT), mean(VOT) + 3 * sd(VOT)),
@@ -40,12 +147,33 @@ Long.term.knowledge <- readRDS("d.chodroff_wilson.rds") %>%
   group_by(Talker, category) %>%
   sample_n(size = first(n_min)) %>%
   ungroup() %>%
-  mutate_at(
-      c("VOT", "f0_Mel"),
-      list("centered" = function(x) apply_ccure(x, data = .)))
-  
+  select(Talker, VOT, f0, f0_Mel, category) %>% 
+  bind_rows(experiment_pretraining) %>% 
+  mutate(
+    f0_centered = round(apply_ccure(f0_Mel, data = .), 0),
+    VOT_centered = round(apply_ccure(VOT, data = .), 0)
+  )
+
+experiment_pretraining <- Long_term_knowledge %>% 
+  filter(Talker == 'experiment')
+
+# reference table for normalization to be used later.
+f0_reference <- experiment_pretraining %>% 
+  select(f0, f0_Mel, f0_centered) %>% 
+  distinct()
+
+VOT_reference <- experiment_pretraining %>% 
+  select(VOT, VOT_centered) %>% 
+  distinct()
+
+Long_term_knowledge <- Long_term_knowledge %>% 
+  filter(Talker != 'experiment')
+```
+
+# Create ideal adaptor
+```{r create ideal adaptor}
 prior_marginal_VOT_f0_stats <-
-  Long.term.knowledge %>%
+  Long_term_knowledge %>%
   group_by(Talker) %>%
   summarise(across(c(VOT, f0_Mel), mean)) %>% 
   ungroup() %>%
@@ -57,11 +185,11 @@ prior_marginal_VOT_f0_stats <-
 
 m.VOT_f0_MVG <-
   make_MVG_from_data(
-  data = Long.term.knowledge,
+  data = Long_term_knowledge,
   category = "category",
   cues = cues)
 
-m.io.VOT_f0.IH <- #make ideal observer for the I&H(2011) experiment
+m.io.VOT_f0.IH <- #make ideal observer for the I&H(2011) experiment, a bivariate Gaussian distribution.
   m.VOT_f0_MVG  %>%
   make_stop_VOTf0_ideal_observer() %>% 
   arrange(category)
@@ -76,45 +204,8 @@ m.ia.VOT_f0.IH <-
   arrange(category)
 ```
 
-# Parameters
-```{r}
-n.subject = 1
-example_label = "Cue_reweighting"
-# set parameter ranges considered by the optimization algorithm
-## parameters for representations model
-range.prior_kappa <- c(1, 10000)
-range.prior_nu <- c(4, 10000) 
-## parameters for bias model
-range.lapse_rate <- c(0, 1)
-range.beta_pi <- c(10^-3, 10^2)
-
-## parameters for normalization model
-range.prior_kappa.normalization <- c(1, 10000)
-```
-
-#Exposure
-```{r sort exposure data}
-
-get_exposure_data <- function(input_data, Condition, n.subject=1) {
-  input_data %<>% left_join(F0_reference, by='f0') %>% left_join(VOT_reference, by='VOT')
-  input_data %<>%
-  mutate(Condition=Condition,
-         Item.Type=Condition,
-         Item.Category = case_when(
-              VOT %in% c(-20, -10, 0) ~ "/b/",
-              TRUE ~ "/p/")) %>%
-  select(-VOT, -f0, -f0_Mel) %>%
-  rename(VOT = VOT_centered,
-         f0_Mel = F0_centered) %>% 
-  crossing(Subject = factor(1:n.subject)) %>%
-  mutate(Subject = paste(Condition, Subject, sep = "."),
-         Phase = 'training',
-         x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
-  mutate(ItemID=as.character(row_number()))
-
-  return(input_data)
-}
-
+#Exposure data
+```{r format the exposure data}
 canonical <- tribble(
   ~VOT, ~f0,
   -20, 230,
@@ -157,27 +248,21 @@ reversed = tribble(
     40, 230
    )
 
-
 d.IH.canonical <- get_exposure_data(canonical, Condition='canonical')
 d.IH.neutral <- get_exposure_data(neutral, Condition='neutral')
 d.IH.reversed <- get_exposure_data(reversed, Condition='reversed')
-names(d.IH.canonical$x) <- NULL
-names(d.IH.neutral$x) <- NULL
-names(d.IH.reversed$x) <- NULL
-
-
-cues <- c('VOT', 'f0_Mel')
-m.VOT_f0_MVG_canonical <- make_MVG_from_data(data=d.IH.canonical,category="Item.Category",cues=cues)
-m.VOT_f0_MVG_neutral <- make_MVG_from_data(data=d.IH.neutral,category = "Item.Category",cues=cues)
-m.VOT_f0_MVG_reversed <- make_MVG_from_data(data=d.IH.reversed,category = "Item.Category",cues=cues)
 ```
-#Test
-```{r}
-n.subject=1
+
+#Test data
+```{r format the test tokens}
 d.IH.test <- tibble(
-  VOT = 22,
-  f0_Mel = c(199,269)
+  VOT = 10,
+  f0 = c(230,290) 
 ) %>% 
+  left_join(f0_reference, by='f0') %>%
+  left_join(VOT_reference, by='VOT') %>% 
+  select(f0_centered, VOT_centered) %>% 
+  rename(f0_Mel=f0_centered, VOT=VOT_centered) %>% 
   mutate(Phase='test',
          Item.Category=NA,
          Item.Intended_category = case_when(
@@ -191,42 +276,8 @@ d.IH.test <- tibble(
   mutate(ItemID=as.character(row_number()))
 ```
 
-# basic plot function
-```{r}
-basic_IH_result_plot <- function(data) {
-  data %>%
-    mutate(Levels = ifelse(normalised_F0 == 199, "Low f0", "High f0")) %>% 
-    ggplot(aes(x = Condition, y = prob.p, group = Levels)) +
-    list(
-      geom_point(size = 1, aes(color = Levels)),
-      scale_color_manual(values = c("orange", "blue")),
-      coord_cartesian(ylim = c(0, 1.1)),
-      scale_y_continuous(breaks = c(0, 0.5, 1)),
-      scale_x_discrete(labels= c("canonical", "neutral", "reversed")),
-      xlab("Exposure condition"),
-      ylab("proportion of /p/ response"),
-      theme(
-        legend.key.height= duo.panel.key,
-        legend.position = "top", 
-        axis.text.x = element_text(angle = 22.5, hjust = 1, size = 15),
-        axis.text.y = element_text(size = 20),
-        axis.title.x = element_text(size = 20, face = "bold"),
-        axis.title.y = element_text(size = 20, face = "bold"),
-        legend.text = element_text (size = 20),
-        legend.title = element_text(size = 20, face = "bold"),
-        plot.title = element_text(size = 20),
-        strip.text.x = element_text(size=15),
-        strip.text.y = element_text(size=15),
-        panel.background = element_rect(fill = "white"),
-        panel.grid.major = element_line(color = "grey", size = 0.5),
-        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
-      )
-}
-
-```
-
 ## Representation models
-```{r find_best_model.representations.IH, message=FALSE, warning=FALSE}
+```{r ideal adaptor model and results for different blocks}
 update_representations_and_categorize_test <- function(
   prior,
   exposure,
@@ -254,27 +305,27 @@ get_representation_models_for_plot <- function(
     ideal_adaptor,
     type
 ){
-  
   all_representations <- list()
   Condition = d.IH.exposure$Condition[[1]]
   if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))){
-    
-  for(i in 1:10){  # Loop to iterate 10 times
-
+  
+  for(i in 1:10){  
+      set.seed(i)
+    # In IH11, exposure trials were presented in random order for each iteration of the 10 iterations. test trials are interspersed with exposure trials. We are unable to implement the interleaving exposure and test trials, but exposure trials are reshuffled in every run. After each iteration, the test trial results are obtained, and the /p/ responses for the two test trials are averaged over the 10 iterations.
+      d.IH.exposure<-d.IH.exposure[sample(nrow(d.IH.exposure)),]
+      
       if(i == 1){
         # Use the ideal adaptor for the first iteration
         m.ia.VOT_f0.IH.plot_sample <- ideal_adaptor
        
       } else {
         # Use the posterior from the previous iteration for the subsequent iteration
-        m.ia.VOT_f0.IH.plot_sample <- 
-        posterior_model_previous <- all_representations[[i-1]] %>% 
+        m.ia.VOT_f0.IH.plot_sample <- all_representations[[i-1]] %>% 
         mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
+        # at this point, there are always two bivariate Gaussian distributions for /b/ and /p/, respectively. Each of them will assign a posterior probability for the two test tokens, one is intended to be /b/ and another /p/. We end up having four rows for each kappa and nu combination. However, what we really need is just the two posterior Gaussian distributions. Therefore, the filter is used here. 
         filter(Item.Intended_category == "/p/") %>% 
         select(prior_kappa, prior_nu, posterior) %>% 
-        unnest(posterior) %>% 
-        arrange(category)
-        
+        unnest(posterior)
       }
       
     representations.pred <- 
@@ -303,102 +354,76 @@ get_representation_models_for_plot <- function(
   return(all_representations)
 }
 
-#get results for independent and sequential models
-#(as canonical trials are the first block, no sequential model for canonical is needed.)
-representation.IH.canonical.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.canonical, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
+#canonical
+representation_IH_canonical_independent <- 
+  get_representation_models_for_plot(d.IH.exposure = d.IH.canonical, ideal_adaptor=m.ia.VOT_f0.IH, type="independent") %>%
+  lapply(function(x) {
+    mutate(x, Condition = "canonical_independent")
+  })
 
-#get the posterior of results before being passed into the sequential model
-model.for.sequential <- function(representation.model) {
-  representation.model <- representation.model %>% 
-        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
-        filter(Item.Intended_category == "/p/") %>% 
-        select(prior_kappa, prior_nu, posterior) %>%
-        unnest(posterior)
-}
+# as the canonical block is the first block, its independent and sequential results are the same.
+representation_IH_canonical_sequential <- representation_IH_canonical_independent %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "canonical_sequential")
+  })
 
 #neutral
-representation.IH.neutral.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
-representation.IH.neutral.sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=model.for.sequential(representation.IH.canonical.independent[[10]]), type="sequential")
+representation_IH_neutral_independent <- 
+  get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=m.ia.VOT_f0.IH, type="independent") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "neutral_independent")
+  })
+
+representation_IH_neutral_sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=model_for_sequential(representation_IH_canonical_independent[[10]]), type="sequential") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "neutral_sequential")
+  })
+
 #reversed
-representation.IH.reversed.independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=m.ia.VOT_f0.IH, type="independent")
-representation.IH.reversed.sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=model.for.sequential(representation.IH.neutral.sequential[[10]]), type="sequential")
+representation_IH_reversed_independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=m.ia.VOT_f0.IH, type="independent") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "reversed_independent")
+  })
 
-#make tibbles for plots
-representation.independent <- rbind(representation.IH.canonical.independent[[10]], representation.IH.neutral.independent[[10]], representation.IH.reversed.independent[[10]]) %>% 
-  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-         normalised_F0 = factor(normalised_F0))
+representation_IH_reversed_sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=model_for_sequential(representation_IH_neutral_sequential[[10]]), type="sequential") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "reversed_sequential")
+  })
 
-representation.sequential <- rbind(representation.IH.canonical.independent[[10]], representation.IH.neutral.sequential[[10]], representation.IH.reversed.sequential[[10]]) %>% 
-  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-         normalised_F0 = factor(normalised_F0))
+vars <- ls()
+rep_models <- grep("^representation_IH_(canonical|neutral|reversed)", vars, value = TRUE)
+r_rep <- map(rep_models, rep_processing) %>% bind_rows() %>% 
+  separate(Condition,into = c("block", "type"), sep = "_", remove = FALSE)
 ```
 
-# representation plots
-```{r}
-categories.IH <- c("/b/", "/p/")
+#Figure4
+```{r Figure4: ideal adaptor results}
 make_results_plot_representations <- function(data) {
-  data %<>% filter(prior_kappa %in% c(16,64,256) & prior_nu %in% c(16,64,256))
+  # for clarity we only present results for a small range of values.
+  # Specifically, changing prior confidence in covariance does not effect results too much.
+  # We used nu=256, which means that listeners still largely rely on their prior experiences (it will take more than 256 input tokens to completely update previous experiences.)
+  # The three kappa values selected are representative of the general patterns we observe in the data.
+  # But readers are encouraged to delete this line and print the full range of results.
+  data <- data %>% filter(prior_kappa %in% c(16,64,256) & prior_nu == 256)
+  
   p.results <-
     basic_IH_result_plot(data) +
     facet_grid(
-      prior_nu ~ prior_kappa,
+      prior_kappa ~ type,
       labeller = label_bquote(
-        cols = {kappa[.(categories.IH[1])~","~0] == kappa[.(categories.IH[2])~","~0]} == .(as.character(prior_kappa)),
-        rows = {nu[.(categories.IH[1])~","~0] == nu[.(categories.IH[2])~","~0]} == .(as.character(prior_nu)))) +   
+        rows = {kappa[.(categories.IH[1])] == kappa[.(categories.IH[2])]} == .(as.character(prior_kappa)))) +
     ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
 
 }
 
-p.representation.independent <- make_results_plot_representations(representation.independent)
-p.representation.sequential <- make_results_plot_representations(representation.sequential)
-p.representation.independent
-p.representation.sequential
+Figure4 <- make_results_plot_representations(r_rep)
+Figure4
 ```
 
-
-# sanity check: representation
-```{r message=FALSE, warning=FALSE}
-d.IH.pretraining <- d.IH.canonical %>% 
-  mutate(Condition='pretraining')
-
-m.ia.VOT_f0.IH.pretraining <-
-  crossing(
-    prior_kappa = 10000,
-    prior_nu = 10000) %>% 
-  rowwise() %>%
-  mutate(ideal_adaptor = map2(prior_kappa, prior_nu, ~ make_stop_VOTf0_ideal_adaptor(m = m.io.VOT_f0.IH, kappa = .x, nu = .y))) %>% 
-  unnest(ideal_adaptor) %>% 
-  arrange(category)
-
-representation.IH.pretraining <- get_representation_models_for_plot(
-  d.IH.exposure = d.IH.pretraining,
-  prior_kappa = 10000,
-  prior_nu = 10000,
-  ideal_adaptor=m.ia.VOT_f0.IH.pretraining,
-  type="independent")
-
-representation.initial <- representation.IH.pretraining[[10]] %>%
-  mutate(prob.p = ifelse(category=='/p/', response, 1-response),
-         normalised_F0 = ifelse(category=='/p/', 269, 199),
-         normalised_F0 = factor(normalised_F0)) %>% 
-  ggplot(aes(x = "pretraining", y = prob.p, group = normalised_F0)) +
-  geom_point(aes(shape = normalised_F0), size = 3) +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold")) +
-  xlab("Condition") + ylab("Probability of /p/ responses") +
-  coord_cartesian(ylim = c(0, 1))
-representation.initial
-```
 
 
 ## Normalization models
-```{r}
+```{r the normalization change model, as well as its results for different blocks}
 update_normalization_and_categorize_test <- function(
   prior,
   mu_0 = first(prior_marginal_VOT_f0_stats$x_mean),
@@ -447,6 +472,9 @@ get_normalization_models_for_plot <- function(
   if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))){
     
   for(i in 1:10){  # Loop to iterate 10 times
+    set.seed(100+i)
+    d.IH.exposure<-d.IH.exposure[sample(nrow(d.IH.exposure)),]
+
       if(i == 1){
         normalization.adaptor <-  normalization.prior
       } else {
@@ -495,263 +523,64 @@ m.ia.VOT_f0.IH.normalization <- m.ia.VOT_f0.IH %>%
   mutate(Item.Intended_category="/p/",
          prior_kappa.normalization = factor(prior_kappa.normalization))
   
-  
- # specify what parameters to plot
-# canonical, again, independent only
-d.IH.normalization.canonical.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.canonical, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent")
 
+# canonical
+normalization_IH_canonical_independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.canonical, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "canonical_independent")
+  })
+
+normalization_IH_canonical_sequential <- d.IH.normalization.canonical.independent %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "canonical_sequential")
+  })
 
 # neutral
-d.IH.normalization.neutral.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent" )
-d.IH.normalization.neutral.sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=d.IH.normalization.canonical.independent[[10]], type="sequential")
+normalization_IH_neutral_independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent") %>%  
+  lapply(function(x) {
+    mutate(x, Condition = "neutral_independent")
+  })
 
-d.IH.normalization.reversed.independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent")
-d.IH.normalization.reversed.sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=d.IH.normalization.neutral.sequential[[10]], type="sequential")
+normalization_IH_neutral_sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.neutral, normalization.prior=normalization_IH_canonical_independent[[10]], type="sequential") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "neutral_sequential")
+  })
 
-normalisation.independent <- rbind(d.IH.normalization.canonical.independent[[10]],
-                       d.IH.normalization.neutral.independent[[10]],
-                       d.IH.normalization.reversed.independent[[10]]) %>% 
-  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-         normalised_F0 = factor(normalised_F0))
+# reversed
+normalization_IH_reversed_independent <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=m.ia.VOT_f0.IH.normalization, type="independent") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "reversed_independent")
+  })
 
-normalisation.sequential <- rbind(d.IH.normalization.canonical.independent[[10]],
-                       d.IH.normalization.neutral.sequential[[10]],
-                       d.IH.normalization.reversed.sequential[[10]]) %>% 
-  mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-         normalised_F0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-         normalised_F0 = factor(normalised_F0))
+normalization_IH_reversed_sequential <- get_normalization_models_for_plot(d.IH.exposure=d.IH.reversed, normalization.prior=normalization_IH_neutral_sequential[[10]], type="sequential") %>% 
+  lapply(function(x) {
+    mutate(x, Condition = "reversed_sequential")
+  })
+
+vars <- ls()
+norm_models <- grep("^normalization_IH_(canonical|neutral|reversed)", vars, value = TRUE)
+
+r_norm <- map(norm_models, norm_processing) %>% bind_rows() %>% 
+  separate(Condition,into = c("block", "type"), sep = "_", remove = FALSE)
 ```
 
-# normalisation plot
-```{r}
+#Figure5
+```{r Figure 5: normalization change model results}
 make_results_plot_normalization <- function(data){
+  data <- data %>%  # we only show the results for this range, because the patterns are roughly similar.
+    filter(prior_kappa.normalization %in% c(16,64,256))
+  
   p.results <- 
     basic_IH_result_plot(data) +
     facet_grid(
-      . ~ prior_kappa.normalization,
+      prior_kappa.normalization ~ type,
       labeller = label_bquote(
-        cols = ~kappa[0] == .(as.character(prior_kappa.normalization)))) +   
+        rows = ~kappa == .(as.character(prior_kappa.normalization)))) +   
     ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
   
 }
 
-p.normalisation.independent <- make_results_plot_normalization(normalisation.independent)
-p.normalisation.sequential <- make_results_plot_normalization(normalisation.sequential)
-p.normalisation.independent
-p.normalisation.sequential
-```
-
-# sanity check: normalisation
-```{r}
-d.IH.pretraining <- d.IH.canonical %>% 
-  mutate(Condition = "pretraining")
-
-m.ia.VOT_f0.IH.pretraining.normalization <- m.ia.VOT_f0.IH.pretraining %>% 
-  nest(posterior = everything()) %>% 
-  crossing(prior_kappa.normalization = 10000) %>% 
-  mutate(Item.Intended_category="/p/",
-         prior_kappa.normalization = factor(prior_kappa.normalization))
-
-d.IH.normalization.pretraining <- 
-  get_normalization_models_for_plot(
-                                    d.IH.exposure=d.IH.pretraining,
-                                    type="independent",
-                                    normalization.prior=m.ia.VOT_f0.IH.pretraining.normalization)
-
-normalization.plot <- d.IH.normalization.pretraining[[10]] %>%
-  mutate(prob.p = ifelse(Item.Intended_category=='/p/', response, 1-response),
-         normalised_F0 = ifelse(Item.Intended_category=='/p/', 269, 199),
-         normalised_F0 = factor(normalised_F0)) %>% 
-  ggplot(aes(x = Condition, y = prob.p, group = normalised_F0)) +
-  geom_point(aes(shape = normalised_F0), size = 3) +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold")) +
-  xlab("Condition") + ylab("Probability of /p/ responses") +
-  coord_cartesian(ylim = c(0, 1))
-normalization.plot
-```
-
-
-
-## Decision bias models
-```{r}
-posterior.lapse_rate.plot <- c(0, 0.005, 0.05, 0.5, 1)
-beta_pi.plot <- c(0, 0.1, 0.5, 1, 4)
-simulation.control <-
-  list(
-    min.simulations = 1, 
-    max.simulations = 1, 
-    step.simulations = 1, 
-    target_accuracy_se = .002)
-
-get_decision_making_models_for_plot <- function(
-    d.IH.exposure,
-    decision.bias.prior,
-    type,
-    lapse_rate=posterior.lapse_rate.plot,
-    beta_pi=beta_pi.plot,
-    control=simulation.control
-) {
-  
-  if(SET_SEED) set.seed(42007)
-  Condition=d.IH.exposure$Condition[[1]]
-  all_decision_bias <- list()
-  
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds")))) {
-    
-    for(i in 1:10){
-      if(i == 1){
-        decision.bias.adaptor <-  decision.bias.prior
-      } else {
-        decision.bias.adaptor <- all_decision_bias[[i-1]]
-      }
-      
-    decision.bias.adaptor <- decision.bias.adaptor %>% 
-        filter(category == "/p/", sim==1) %>% 
-        select(posterior.lapse_rate, beta_pi, posterior) %>% 
-        rename(prior=posterior)
-    
-    bias.pred <- 
-      d.IH.exposure %>%
-      nest(data = -c(Condition, Subject)) %>%
-      crossing(prior=decision.bias.adaptor$prior,
-               posterior.lapse_rate=decision.bias.adaptor$posterior.lapse_rate,
-               beta_pi=decision.bias.adaptor$beta_pi)%>%
-      group_by(Condition, Subject, posterior.lapse_rate, beta_pi) %>%
-      group_modify(
-        ~ update_bias_and_categorize_test(
-          prior = .x$prior[[1]],
-          lapse_rate = .y$posterior.lapse_rate,
-          beta_pi = .y$beta_pi,
-          exposure = .x$data[[1]],
-          test = d.IH.test,
-          control = control), 
-        .keep = TRUE, verbose = T) %>%
-      mutate_at(vars(starts_with("prior_")), ~ factor(.x)) %>%
-      mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-      ungroup()
-      
-      all_decision_bias[[i]] <- bias.pred
-    }
-    
-    saveRDS(all_decision_bias, get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds"))) 
-  } else {
-    all_decision_bias <- readRDS(get_path(paste0("../models/d.IH.results.bias_", example_label, "_", Condition, "_", type, ".rds")))
-  }
-  
-  return(all_decision_bias) 
-}
-
-m.ia.VOT_f0.IH.decision.bias <- m.ia.VOT_f0.IH %>%
-    filter(prior_kappa == max(prior_kappa), prior_nu == max(prior_nu)) %>%
-    nest(posterior = everything()) %>% 
-    crossing(
-      posterior.lapse_rate = c(0, 0.005, 0.05, 0.5, 1), 
-      beta_pi = c(0, 0.1, 0.5, 1, 4)) %>% 
-    mutate(category="/p/", sim=as.double(1))
-
-d.IH.canonical.bias.independent <- 
-  get_decision_making_models_for_plot(
-    d.IH.exposure=d.IH.canonical,
-    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
-    type="independent")
-
-d.IH.neutral.bias.independent <- 
-  get_decision_making_models_for_plot(
-    d.IH.exposure = d.IH.neutral,
-    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
-    type="independent")
-
-d.IH.neutral.bias.seqeuential <- 
-  get_decision_making_models_for_plot(
-    d.IH.exposure = d.IH.neutral,
-    decision.bias.prior=d.IH.canonical.bias.independent[[10]],
-    type="sequential")
-
-d.IH.reversed.bias.independent <- 
-  get_decision_making_models_for_plot(
-    d.IH.exposure = d.IH.reversed,
-    decision.bias.prior=m.ia.VOT_f0.IH.decision.bias,
-    type="independent")
-
-d.IH.reversed.bias.seqeuential <- 
-  get_decision_making_models_for_plot(
-    d.IH.exposure = d.IH.reversed,
-    decision.bias.prior=d.IH.neutral.bias.seqeuential[[10]],
-    type="sequential")
-
-avaerage.across.sim <- function(data) {
-  data %<>%
-  mutate(prob.p = case_when(Item.Intended_category=='/p/' ~ response,
-                            Item.Intended_category=='/b/' ~ 1-response)) %>% 
-  group_by(Condition, posterior.lapse_rate, beta_pi, Item.Intended_category) %>% 
-  summarise(prob.p = mean(prob.p)) %>% 
-  mutate(normalised_F0 = ifelse(Item.Intended_category == "/p/", 269, 199),
-         normalised_F0 = factor(normalised_F0))
-  
-  return(data)
-}
-
-d.IH.canonical.prob.p.independent <- avaerage.across.sim(d.IH.canonical.bias.independent[[10]])
-d.IH.neutral.prob.p.independent <- avaerage.across.sim(d.IH.neutral.bias.independent[[10]])
-d.IH.neutral.prob.p.sequential <- avaerage.across.sim(d.IH.neutral.bias.seqeuential[[10]])
-d.IH.reversed.prob.p.independent <- avaerage.across.sim(d.IH.reversed.bias.independent[[10]])
-d.IH.reversed.prob.p.sequential <- avaerage.across.sim(d.IH.reversed.bias.seqeuential[[10]])
-
-decision.bias.independent <- rbind(d.IH.canonical.prob.p.independent,
-                       d.IH.neutral.prob.p.independent,
-                       d.IH.reversed.prob.p.independent)
-decision.bias.sequential <- rbind(d.IH.canonical.prob.p.independent,
-                       d.IH.neutral.prob.p.sequential,
-                       d.IH.reversed.prob.p.sequential)
-```
-
-
-# decision bias plot
-```{r}
-make_results_plot_decision_making <- function(data){
-  p.results <- 
-    basic_IH_result_plot(data) +
-    facet_grid(
-      posterior.lapse_rate ~ beta_pi,
-      labeller = label_bquote(
-        cols = beta[pi] == .(beta_pi),
-        rows = lambda == ~.(posterior.lapse_rate))) +   
-    ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
-}
-
-p.decision.bias.independent <- make_results_plot_decision_making(decision.bias.independent)
-p.decision.bias.sequential <- make_results_plot_decision_making(decision.bias.sequential)
-p.decision.bias.independent
-p.decision.bias.sequential
-```
-
-# sanity check: decision bias 
-```{r sanity check for decision bias model}
-  
-canonical.rows <- d.IH.canonical.prob.p %>% filter(posterior.lapse_rate == 0 & beta_pi == 0) %>% mutate(Condition = "pretraining")
-
-decision.plot <- canonical.rows %>%
-  mutate(
-         normalised_F0 = ifelse(Item.Intended_category=='/p/', 269, 199),
-         normalised_F0 = factor(normalised_F0)) %>% 
-  ggplot(aes(x = Condition, y = prob.p, group = normalised_F0)) +
-  geom_point(aes(shape = normalised_F0), size = 3) +
-  theme(legend.text = element_text (size = 12),
-        legend.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 12),
-        axis.text.y = element_text(size = 10),
-        axis.text.x = element_text(size = 12),
-        axis.title = element_text(size = 12, face = "bold")) +
-  xlab("Condition") + ylab("Probability of /p/ responses") +
-  coord_cartesian(ylim = c(0, 1))
-
-decision.plot
-
+Figure5 <- make_results_plot_normalization(r_norm)
+Figure5
 ```
 

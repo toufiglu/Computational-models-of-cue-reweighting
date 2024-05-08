@@ -1,0 +1,393 @@
+---
+title: "Error-driven learning model"
+output: html_document
+date: "2023-12-08"
+---
+```{r setup, include=FALSE}
+rm(list = ls())
+library(ndl)
+library(tidyverse)
+library(boot)
+library(mgcv)
+library(magrittr)
+source("functions.R")
+maxRep = 1000
+```
+
+# Load functions: Rescorla function is adapted from Harmon et al., (2019)
+```{r RW-code} 
+Rescorla = function (cuesOutcomes = train,
+                     Lambda=1,
+                     rate,
+			               w) 
+{   
+    cues = unique(unlist(strsplit(cuesOutcomes$Cues, "_")))
+    outcomes = unique(unlist(strsplit(cuesOutcomes$Outcomes, "_")))
+    
+    w=w
+
+    preTrained=FALSE
+    if (all(!is.na(w))==TRUE){preTrained=TRUE}
+    if (preTrained==TRUE) {outcomes = colnames(w)}
+    if (preTrained==FALSE) 
+     { 
+      w = matrix(0, length(cues), length(outcomes)) 
+      rownames(w)=cues
+      colnames(w)=outcomes
+	}
+    theCues = strsplit(cuesOutcomes$Cues, "_")
+    theOutcomes = strsplit(cuesOutcomes$Outcomes, "_")
+    
+    if (preTrained==FALSE) {knownOutcomes = NULL}
+    if (preTrained==TRUE) {knownOutcomes = outcomes}
+    
+    for (i in 1:nrow(cuesOutcomes)) {
+      cs = theCues[[i]]
+      ou = theOutcomes[[i]] 
+      toAdd = ou[!is.element(ou, knownOutcomes)]
+      knownOutcomes = c(knownOutcomes, toAdd)
+      Vtotal = colSums(w[cs,ou,drop=FALSE])
+	    w[cs,ou] = t(t(w[cs,ou]) + (Lambda-Vtotal)*rate)
+	    otherou = knownOutcomes[!is.element(knownOutcomes, ou)]
+
+      if (!is.null(otherou)) {
+         Vtotal = colSums(w[cs,otherou,drop=FALSE])
+  	     w[cs,otherou] = t(t(w[cs,otherou]) + (0-Vtotal)*rate)
+      }
+    }
+    return(w)
+}
+
+Run_Rescorla <- function(exposure, w_pre, rate) 
+  {
+  train = exposure
+  train$Cues<-as.character(train$Cues)
+  train$Outcomes<-as.character(train$Outcomes)
+  
+  # record the results for each round.
+  plot_round <- list()
+  w_round <- list()
+  
+  # The Rescorla-Wagner model has substantial randomness due to the order of presentation. Therefore, following Harmon et al., 2019's implementation, we also ran the model 1000 times and take an averaged responses. To maintain reproducible results, we set seed before each of the outer loop as well as the inner loop.
+
+  for (round in 1:10) {
+    w <- if (round == 1) w_pre else w_round[[round - 1]]
+    act.p <- matrix(NA, numTestStim, maxRep)
+    act.b <- matrix(NA, numTestStim, maxRep)
+    
+    set.seed(123+round)
+    train<-train[sample(nrow(train)),]
+    
+  for (nRep in 1:maxRep)
+  {
+      set.seed(1000 * round + nRep)
+      train<-train[sample(nrow(train)),]
+      if (nRep==1) {w<-Rescorla(train,rate=rate,w=w)}
+      else {w<-(w*(nRep-1)+Rescorla(train,rate=rate,w=w))/nRep}
+      
+  
+      #activation of p and b for each test stimulus
+      for (i in 1:numTestStim)
+      {
+      act.p[i,nRep]<-sum(w[testStim[i,],"p"])  
+      act.b[i,nRep]<-sum(w[testStim[i,],"b"])   
+      }
+      
+  }
+  
+  #following Harmon and colleagues, we limit activation to be between 0 and 1
+  act.p[act.p<0]<-0
+  act.b[act.b<0]<-0
+  act.p[act.p>1]<-1
+  act.b[act.b>1]<-1
+  
+  #Calculating the mean activation of p and b across replications
+  #Putting it into the plot data
+  plot_round[[round]] <- list(
+        mean.act.p = apply(act.p, 1, mean),
+        sd.act.p = apply(act.p, 1, sd),
+        mean.act.b = apply(act.b, 1, mean),
+        sd.act.b = apply(act.b, 1, sd)
+    )
+  
+  w_round[[round]]=w
+  
+  }
+  return(list(plot_data = plot_round, w=w_round))
+}
+
+calculate_luce_choice <- function(data) {
+  # apply Luce's choice rule to get the probability of p for each of the two test tokens in each iteration
+  r.iterations <- lapply(data$plot_data, function(list_data) {
+    mean_act_p <- list_data$mean.act.p
+    mean_act_b <- list_data$mean.act.b
+    mean_act_p / (mean_act_p + mean_act_b)
+  })
+
+  # calculate the mean over the 10 iterations.
+  r.mean <- sapply(1:2, function(index) {
+  mean(sapply(r.iterations, function(x) x[index]))
+  })
+  return(r.mean)
+  }
+
+format_training_data <- function(data) {
+  data <- data %>%
+  left_join(f0_reference, by='f0') %>% 
+  left_join(VOT_reference, by='VOT') %>% 
+  mutate(
+    Frequency = 1,
+    Outcomes = case_when(
+      VOT %in% c(-20, -10, 0) ~ "b",
+      TRUE ~ "p"
+    ),
+    Cues = paste(paste0("normalised.vot", VOT_centered), 
+                 paste0("normalised.f0", f0_centered), sep = "_"),
+  ) %>% 
+  select(Cues, Outcomes, Frequency) %>% 
+  slice(rep(1:n(), each = Frequency)) %>% 
+  select(-Frequency)
+}
+```
+
+# Load pre-training data, perform normalization
+```{r message=FALSE, warning=FALSE}
+training_trials <- expand.grid(
+    VOT = c(-20, -10, 0, 20, 30, 40),
+    f0 = seq(220, 300, by=10),
+    Talker = "experiment"
+    ) %>% 
+  mutate(category = case_when(
+      VOT %in% c(-20, -10, 0) ~ "b",
+      TRUE ~ "p"))
+
+test_trials <- data.frame(
+  VOT = 10,
+  f0 = c(230, 230, 290, 290),
+  Talker = 'experiment',
+  category = c('b', 'p', 'b', 'p')
+) # is this the right way to approach it? 
+ # Yes, because adding them to the training was necessary to obtain cue weights for these values.
+# The rationale here is similar to the pretraining of the ideal adaptor.
+
+experiment_pretraining <- rbind(training_trials, test_trials) %>% 
+  mutate(f0_Mel = phonR::normMel(f0))
+
+Long_term_knowledge <- readRDS("d.chodroff_wilson.rds") %>%
+  filter(poa == "/b/-/p/") %>%
+  droplevels() %>% 
+  filter(
+    between(VOT, mean(VOT) - 3 * sd(VOT), mean(VOT) + 3 * sd(VOT)),
+    between(f0_Mel, mean(f0_Mel) - 3 * sd(f0_Mel), mean(f0_Mel) + 3 * sd(f0_Mel))) %>% 
+  group_by(Talker, category) %>% 
+  mutate(n = n()) %>%
+  group_by(Talker) %>%
+  mutate(
+    n_min = min(n),
+    n_category = n_distinct(category)) %>%
+  # select talkers with both categories
+  filter(n_category == 2) %>%
+  group_by(Talker, category) %>%
+  sample_n(size = first(n_min)) %>%
+  ungroup() %>%
+  select(Talker, VOT, f0, f0_Mel, category) %>% 
+  bind_rows(experiment_pretraining) %>% 
+  mutate(
+    f0_centered = round(apply_ccure(f0_Mel, data = .), 0),
+    VOT_centered = round(apply_ccure(VOT, data = .), 0)
+  )
+
+experiment_pretraining <- Long_term_knowledge %>% 
+  filter(Talker == 'experiment')
+
+# reference table for normalization to be used later.
+f0_reference <- experiment_pretraining %>% 
+  select(f0, f0_Mel, f0_centered) %>% 
+  distinct()
+
+VOT_reference <- experiment_pretraining %>% 
+  select(VOT, VOT_centered) %>% 
+  distinct()
+
+experiment_pretraining <- experiment_pretraining %>% 
+  mutate (
+    Frequency = 0,
+    Cues = paste(paste0("normalised.vot", experiment_pretraining$VOT_centered), 
+                 paste0("normalised.f0", experiment_pretraining$f0_centered),
+                 sep = "_"),
+    Outcomes = category
+  ) %>% 
+  select(Cues, Outcomes, Frequency)
+  
+
+Long_term_pretraining <- Long_term_knowledge %>% 
+  filter(Talker != 'experiment') %>% 
+  mutate(category = as.character(category),
+         category = gsub("/", "", category),
+         Outcomes = category,
+         Cues = paste(paste0("normalised.vot", round(VOT_centered)), 
+                 paste0("normalised.f0", round(f0_centered)),
+                 sep = "_")) %>% 
+  count(Cues, Outcomes) %>% 
+  mutate(Frequency = n) %>% 
+  select(-n)
+
+pretraining <- rbind(Long_term_pretraining, experiment_pretraining)
+
+set.seed(1)
+w.pre<-estimateWeights(pretraining)
+```
+
+# test items
+```{r}
+# The raw values for test items are VOT10, f0230,290. Here, we make reference to
+# VOT_reference and f0_reference tables.
+
+testStim<-rbind(c("normalised.vot22","normalised.f0199"),
+                c("normalised.vot22","normalised.f0269"))
+numTestStim<-dim(testStim)[1]
+plot.data<-data.frame(testStim,stringsAsFactors=F)
+names(plot.data)=c("VOT", "f0")
+act.p<-mat.or.vec(numTestStim,maxRep)
+act.b<-mat.or.vec(numTestStim,maxRep)
+```
+
+
+# Canonical
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+canonical <- tribble(
+  ~VOT, ~f0,
+  -20, 230,
+  -10, 220,
+  -10, 230,
+  -10, 240,
+  0, 230,
+  20, 290,
+  30, 280,
+  30, 290,
+  30, 300,
+  40, 290
+) %>% format_training_data()
+
+# get results for different learning rate
+r_0.01_canonical_independent <- Run_Rescorla(exposure=canonical, w_pre=w.pre, rate=0.01)
+r_0.1_canonical_independent <- Run_Rescorla(exposure=canonical, w_pre=w.pre, rate=0.1)
+r_0.9_canonical_independent <- Run_Rescorla(exposure=canonical, w_pre=w.pre, rate=0.9)
+
+# for the canonical block, which is the first block, independent and sequential models are identical.
+r_0.01_canonical_sequential <- r_0.01_canonical_independent
+r_0.1_canonical_sequential <- r_0.1_canonical_independent
+r_0.9_canonical_sequential <- r_0.9_canonical_independent
+
+# calculate the averaged /p/ probability across the ten blocks.
+vars <- ls()
+canonical_vars <- grep("^r_(0.01|0.1|0.9)_canonical", vars, value = TRUE)
+canonical_list <- mget(canonical_vars)
+canonical_results <- lapply(canonical_list, function(x) calculate_luce_choice(x))
+d.canonical <- as.data.frame(do.call(cbind, canonical_results))
+```
+
+
+# Neutral
+```{r message=FALSE, warning=FALSE}
+neutral = tribble(
+  ~VOT, ~f0,
+  -20, 260,
+  -10, 250,
+  -10, 260,
+  -10, 270,
+    0, 260,
+    20, 260,
+    30, 250,
+    30, 260,
+    30, 270,
+    40, 260
+   ) %>% format_training_data()
+
+r_0.01_neutral_independent <- Run_Rescorla(exposure=neutral, rate=0.01, w_pre=w.pre)
+r_0.1_neutral_independent <- Run_Rescorla(exposure=neutral, rate=0.1, w_pre=w.pre)
+r_0.9_neutral_independent <- Run_Rescorla(exposure=neutral, rate=0.9, w_pre=w.pre)
+
+r_0.01_neutral_sequential <- Run_Rescorla(exposure=neutral, rate=0.01, w_pre=r_0.01_canonical_sequential$w[10][[1]])
+r_0.1_neutral_sequential <- Run_Rescorla(exposure=neutral, rate=0.1, w_pre=r_0.1_canonical_sequential$w[10][[1]])
+r_0.9_neutral_sequential <- Run_Rescorla(exposure=neutral, rate=0.9, w_pre=r_0.9_canonical_sequential$w[10][[1]])
+
+vars <- ls()
+neutral_vars <- grep("^r_(0.01|0.1|0.9)_neutral", vars, value = TRUE)
+neutral_list <- mget(neutral_vars)
+neutral_results <- lapply(neutral_list, function(x) calculate_luce_choice(x))
+d.neutral <- as.data.frame(do.call(cbind, neutral_results))
+```
+
+
+# Reversed
+```{r message=FALSE, warning=FALSE}
+reversed = tribble(
+  ~VOT, ~f0,
+  -20, 290,
+  -10, 280,
+  -10, 290,
+  -10, 300,
+    0, 290,
+    20, 230,
+    30, 220,
+    30, 230,
+    30, 240,
+    40, 230
+   ) %>% format_training_data()
+
+r_0.01_reversed_independent <- Run_Rescorla(exposure=reversed, rate=0.01, w_pre=w.pre)
+r_0.1_reversed_independent <- Run_Rescorla(exposure=reversed, rate=0.1, w_pre=w.pre)
+r_0.9_reversed_independent <- Run_Rescorla(exposure=reversed, rate=0.9, w_pre=w.pre)
+
+r_0.01_reversed_sequential <- Run_Rescorla(exposure=reversed, rate=0.01, w_pre=r_0.01_neutral_sequential$w[10][[1]])
+r_0.1_reversed_sequential <- Run_Rescorla(exposure=reversed, rate=0.1, w_pre=r_0.1_neutral_sequential$w[10][[1]])
+r_0.9_reversed_sequential <- Run_Rescorla(exposure=reversed, rate=0.9, w_pre=r_0.9_neutral_sequential$w[10][[1]])
+
+vars <- ls()
+reversed_vars <- grep("^r_(0.01|0.1|0.9)_reversed", vars, value = TRUE)
+reversed_list <- mget(reversed_vars)
+reversed_results <- lapply(reversed_list, function(x) calculate_luce_choice(x))
+d.reversed <- as.data.frame(do.call(cbind, reversed_results))
+```
+
+# Processing
+```{r}
+d.combined <- cbind(plot.data, d.canonical, d.neutral, d.reversed) %>% 
+  pivot_longer(cols=-c(VOT, f0), names_to = "Model", values_to = "prob.p") %>% 
+  separate(Model, into = c("results", "rate", "block", "model"), sep = "_") %>%
+  select(-results) %>% 
+  mutate(VOT=10,
+         f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0"),
+         rate=paste0("rate=", rate)) %>% 
+  rename(Levels=f0)
+```
+
+
+# Figure 3
+```{r}
+Figure3 <- d.combined %>%
+  ggplot(aes(x = block, y = prob.p, group = Levels, color = Levels)) + 
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
+  coord_cartesian(ylim = c(0, 1.1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  facet_grid(rate ~ model) +
+  theme(legend.text = element_text (size = 20),
+        legend.position = "top",
+        legend.title = element_text(size = 20, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25),
+        strip.text.x = element_text(size = 20, face = "bold"),
+        strip.text.y = element_text(size = 20, face = "bold")) +
+  xlab ("Condition") + ylab("Proportion of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+
+
+Figure3
+```
+
