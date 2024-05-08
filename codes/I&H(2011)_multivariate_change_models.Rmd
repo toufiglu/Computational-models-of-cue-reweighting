@@ -530,7 +530,7 @@ normalization_IH_canonical_independent <- get_normalization_models_for_plot(d.IH
     mutate(x, Condition = "canonical_independent")
   })
 
-normalization_IH_canonical_sequential <- d.IH.normalization.canonical.independent %>% 
+normalization_IH_canonical_sequential <- normalization_IH_canonical_independent %>% 
   lapply(function(x) {
     mutate(x, Condition = "canonical_sequential")
   })

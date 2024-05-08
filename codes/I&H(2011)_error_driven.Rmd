@@ -377,7 +377,7 @@ Figure3 <- d.combined %>%
         legend.position = "top",
         legend.title = element_text(size = 20, face = "bold"),
         axis.text.y = element_text(size = 20),
-        axis.text.x = element_text(size = 20),
+        axis.text.x = element_text(angle=22.5, hjust=1, size = 20),
         axis.title = element_text(size = 20, face = "bold"),
         panel.background = element_rect(fill = "white"),
         panel.grid.major = element_line(color = "grey", size = 0.5),
