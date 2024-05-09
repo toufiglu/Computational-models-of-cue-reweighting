@@ -1,0 +1,129 @@
+---
+title: "Sanity_check"
+output: html_document
+date: "2024-01-12"
+---
+# initiate
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+source("libraries.R")
+source("functions.R")
+RESET_MODELS = F
+cues <- c("VOT_centered", "f0_Mel_centered")
+```
+# obtain normalized pre-training data for plotting in figure 1 and 2.
+```{r load-data}
+training_trials <- expand.grid(
+    VOT = c(-20, -10, 0, 20, 30, 40),
+    f0 = seq(220, 300, by=10),
+    Talker = "experiment"
+    ) %>% 
+  mutate(category = case_when(
+      VOT %in% c(-20, -10, 0) ~ "b",
+      TRUE ~ "p"))
+
+test_trials <- data.frame(
+  VOT = 10,
+  f0 = c(230, 230, 290, 290),
+  Talker = 'experiment',
+  category = c('b', 'p', 'b', 'p')
+) # is this the right way to approach it? 
+ # Yes, because adding them to the training was necessary to obtain cue weights for these values.
+# The rationale here is similar to the pretraining of the ideal adaptor.
+
+experiment_pretraining <- rbind(training_trials, test_trials) %>% 
+  mutate(f0_Mel = phonR::normMel(f0))
+
+Long_term_knowledge <- readRDS("d.chodroff_wilson.rds") %>%
+  filter(poa == "/b/-/p/") %>%
+  droplevels() %>% 
+  filter(
+    between(VOT, mean(VOT) - 3 * sd(VOT), mean(VOT) + 3 * sd(VOT)),
+    between(f0_Mel, mean(f0_Mel) - 3 * sd(f0_Mel), mean(f0_Mel) + 3 * sd(f0_Mel))) %>% 
+  group_by(Talker, category) %>% 
+  mutate(n = n()) %>%
+  group_by(Talker) %>%
+  mutate(
+    n_min = min(n),
+    n_category = n_distinct(category)) %>%
+  # select talkers with both categories
+  filter(n_category == 2) %>%
+  group_by(Talker, category) %>%
+  sample_n(size = first(n_min)) %>%
+  ungroup() %>%
+  select(Talker, VOT, f0, f0_Mel, category) %>% 
+  bind_rows(experiment_pretraining) %>% 
+  mutate(
+    f0_centered = round(apply_ccure(f0_Mel, data = .), 0),
+    VOT_centered = round(apply_ccure(VOT, data = .), 0)
+  )
+
+experiment_pretraining <- Long_term_knowledge %>% 
+  filter(Talker == 'experiment')
+
+# reference table for normalization to be used later.
+f0_reference <- experiment_pretraining %>% 
+  select(f0, f0_Mel, f0_centered) %>% 
+  distinct()
+
+VOT_reference <- experiment_pretraining %>% 
+  select(VOT, VOT_centered) %>% 
+  distinct()
+```
+
+# Figure 1
+```{r}
+Figure1 <- ggplot() +
+  stat_ellipse(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), 
+               geom = "polygon", level = 0.95, alpha = 0.2) +
+  geom_point(data = Long.term.knowledge, aes(x = VOT, y = f0, color = category), size = 0.1) +
+  scale_color_manual(values = c("/b/" = "orange", 
+                                "/p/" = "blue")) +
+  labs(color = "") +
+  theme(plot.title = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0.5, size = rel(1.1)),
+        legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
+
+Figure1
+```
+# Figure 2
+```{r}
+IH_figure5 <- tribble( # as IH11 experiment data are not available at the moment, we estimated their results from published figures. As soon as we manage to obtain the data, we will update the plot with error bars.
+  
+  ~f0, ~condition, ~prob.p, ~Levels,
+  290, "canonical", 0.75, "High f0",
+  290, "neutral", 0.70, "High f0",
+  290, "reversed", 0.56, "High f0",
+  230, "canonical", 0.31, "Low f0",
+  230, "neutral", 0.28, "Low f0",
+  230, "reversed", 0.45, "Low f0"
+) %>% 
+  mutate(Levels = as.factor(Levels))
+
+Figure2 <- IH_figure5 %>%
+  ggplot(aes(x = condition, y = prob.p, group = Levels, color = Levels)) + 
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
+  theme(legend.text = element_text (size = 20),
+        legend.title = element_text(size = 20, face = "bold"),
+        plot.title = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25)) +
+  xlab ("Condition") + ylab("Proportion of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+
+Figure2
+
+```

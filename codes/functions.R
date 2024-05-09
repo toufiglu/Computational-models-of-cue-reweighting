@@ -433,7 +433,7 @@ add_categorization <- function(data) {
         decision_rule = "proportional",
         lapse_treatment = "marginalize",
         noise_treatment = "marginalize")))) %>%
-    select(-x) %>%
+    dplyr::select(-x) %>%
     unnest(categorization)
 }
 
@@ -461,7 +461,7 @@ add_test_and_categorize <- function(data, test = NULL) {
       left_join(
         .,
         test %>%
-          select(x, Item.Intended_category),
+          dplyr::select(x, Item.Intended_category),
         by = "x")
     } else {
       left_join(
