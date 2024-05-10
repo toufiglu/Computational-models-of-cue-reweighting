@@ -9,6 +9,8 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 source("libraries.R")
 source("functions.R")
 source("parameters.R")
+
+# set.seed(83984)
 ```
 
 # Load functions: functions for packaging, processing, and visualzing data
@@ -111,6 +113,10 @@ basic_IH_result_plot <- function(data) {
 
 # Pretraining and normalization of all tokens used
 ```{r filter pretraining data from C&W and get ideal observer}
+
+# training_trials and test_trials contain all the tokens that will be talker-normalized; each token appears only once
+## Yiming: let's revisit the procedure of talker-normalization for the experimental talker, in terms of how repetitions of the same token should be used in this process (cf. Zhang et al. 2018)
+
 training_trials <- expand.grid(
     VOT = c(-20, -10, 0, 20, 30, 40),
     f0 = seq(220, 300, by=10),
@@ -307,45 +313,46 @@ get_representation_models_for_plot <- function(
 ){
   all_representations <- list()
   Condition = d.IH.exposure$Condition[[1]]
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))){
-  
-  for(i in 1:10){  
-      set.seed(i)
-    # In IH11, exposure trials were presented in random order for each iteration of the 10 iterations. test trials are interspersed with exposure trials. We are unable to implement the interleaving exposure and test trials, but exposure trials are reshuffled in every run. After each iteration, the test trial results are obtained, and the /p/ responses for the two test trials are averaged over the 10 iterations.
-      d.IH.exposure<-d.IH.exposure[sample(nrow(d.IH.exposure)),]
-      
-      if(i == 1){
-        # Use the ideal adaptor for the first iteration
-        m.ia.VOT_f0.IH.plot_sample <- ideal_adaptor
-       
-      } else {
-        # Use the posterior from the previous iteration for the subsequent iteration
-        m.ia.VOT_f0.IH.plot_sample <- all_representations[[i-1]] %>% 
-        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
-        # at this point, there are always two bivariate Gaussian distributions for /b/ and /p/, respectively. Each of them will assign a posterior probability for the two test tokens, one is intended to be /b/ and another /p/. We end up having four rows for each kappa and nu combination. However, what we really need is just the two posterior Gaussian distributions. Therefore, the filter is used here. 
-        filter(Item.Intended_category == "/p/") %>% 
-        select(prior_kappa, prior_nu, posterior) %>% 
-        unnest(posterior)
+    if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))){
+    
+    for(i in 1:10){  
+        set.seed(i)
+      # In IH11, exposure trials were presented in random order for each iteration of the 10 iterations. test trials are interspersed with exposure trials. We are unable to implement the interleaving exposure and test trials, but exposure trials are reshuffled in every run. After each iteration, the test trial results are obtained, and the /p/ responses for the two test trials are averaged over the 10 iterations.
+        d.IH.exposure<-d.IH.exposure[sample(nrow(d.IH.exposure)),]
+        
+        if(i == 1){
+          # Use the ideal adaptor for the first iteration
+          m.ia.VOT_f0.IH.plot_sample <- ideal_adaptor
+         
+        } else {
+          # Use the posterior from the previous iteration for the subsequent iteration
+          m.ia.VOT_f0.IH.plot_sample <- all_representations[[i-1]] %>% 
+          mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
+          # at this point, there are always two bivariate Gaussian distributions for /b/ and /p/, respectively. Each of them will assign a posterior probability for the two test tokens, one is intended to be /b/ and another /p/. We end up having four rows for each kappa and nu combination. However, what we really need is just the two posterior Gaussian distributions. Therefore, the filter is used here. 
+          filter(Item.Intended_category == "/p/") %>% 
+          select(prior_kappa, prior_nu, posterior) %>% 
+          unnest(posterior)
+        }
+        
+      representations.pred <- 
+        d.IH.exposure %>%
+        nest(data = -c(Condition, Subject)) %>%
+        crossing(
+          m.ia.VOT_f0.IH.plot_sample %>%
+            nest(prior = -c(prior_kappa, prior_nu))) %>%
+        group_by(Condition, Subject, prior_kappa, prior_nu) %>%
+        group_modify(~ update_representations_and_categorize_test(prior = .x$prior[[1]], exposure = .x$data[[1]], test = d.IH.test)) %>%
+        mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
+        mutate_at(vars(starts_with("prior_")), fct_rev) %>%
+        ungroup() %>% 
+        mutate(Iteration = i)
+        
+        # Ensure to add the result to the all_representations list
+        all_representations[[i]] <- representations.pred
+         saveRDS(all_representations, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))
       }
-      
-    representations.pred <- 
-      d.IH.exposure %>%
-      nest(data = -c(Condition, Subject)) %>%
-      crossing(
-        m.ia.VOT_f0.IH.plot_sample %>%
-          nest(prior = -c(prior_kappa, prior_nu))) %>%
-      group_by(Condition, Subject, prior_kappa, prior_nu) %>%
-      group_modify(~ update_representations_and_categorize_test(prior = .x$prior[[1]], exposure = .x$data[[1]], test = d.IH.test)) %>%
-      mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
-      mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-      ungroup() %>% 
-      mutate(Iteration = i)
-      
-      # Ensure to add the result to the all_representations list
-      all_representations[[i]] <- representations.pred
-       saveRDS(all_representations, get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))
     }
-    }
+    
     else {
       all_representations <- readRDS(get_path(paste0("../models/d.IH.results.representations_", example_label, "_", Condition, "_", type, ".rds")))
     }
@@ -353,6 +360,8 @@ get_representation_models_for_plot <- function(
   
   return(all_representations)
 }
+
+
 
 #canonical
 representation_IH_canonical_independent <- 
@@ -374,10 +383,12 @@ representation_IH_neutral_independent <-
     mutate(x, Condition = "neutral_independent")
   })
 
-representation_IH_neutral_sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral, ideal_adaptor=model_for_sequential(representation_IH_canonical_independent[[10]]), type="sequential") %>% 
+representation_IH_neutral_sequential <- get_representation_models_for_plot(d.IH.exposure = d.IH.neutral,  ideal_adaptor=model_for_sequential(representation_IH_canonical_independent[[10]]), type="sequential") %>% 
   lapply(function(x) {
     mutate(x, Condition = "neutral_sequential")
   })
+
+# Yiming: set a parameter to specify the input to the 'model_for_sequential' function
 
 #reversed
 representation_IH_reversed_independent <- get_representation_models_for_plot(d.IH.exposure = d.IH.reversed, ideal_adaptor=m.ia.VOT_f0.IH, type="independent") %>% 
