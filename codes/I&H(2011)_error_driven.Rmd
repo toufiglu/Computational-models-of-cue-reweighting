@@ -5,7 +5,7 @@ date: "2023-12-08"
 ---
 ```{r setup, include=FALSE}
 rm(list = ls())
-library(ndl)
+library(ndl) # Yiming: add annotations for packages that are not commonly used and briefly describe why they are needed
 library(tidyverse)
 library(boot)
 library(mgcv)
@@ -152,6 +152,12 @@ format_training_data <- function(data) {
 
 # Load pre-training data, perform normalization
 ```{r message=FALSE, warning=FALSE}
+# Yiming: rename all the chunks in a straightforward and meaningful manner and avoid duplicated names. It would throw errors if you knit the rmd file. The chunk names should be self-explanatory. 
+
+
+# Yiming: the set up of the training-test data and long-term knowledge is shared between the two models. So please make them a separate thing and just call them when running the error-driven model and the other models. For instance, you can keep this part in a parent rmd; then have the ideal adaptor model and the error-driven learning model both as child rmd files that will be called and run subsequently.
+
+
 training_trials <- expand.grid(
     VOT = c(-20, -10, 0, 20, 30, 40),
     f0 = seq(220, 300, by=10),
@@ -372,7 +378,7 @@ Figure3 <- d.combined %>%
   scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
   coord_cartesian(ylim = c(0, 1.1)) +
   scale_y_continuous(breaks = c(0, 0.5, 1)) +
-  facet_grid(rate ~ model) +
+  facet_grid(model ~ rate) +
   theme(legend.text = element_text (size = 20),
         legend.position = "top",
         legend.title = element_text(size = 20, face = "bold"),
@@ -389,5 +395,40 @@ Figure3 <- d.combined %>%
 
 
 Figure3
+```
+
+```{r model comparison}
+# calculate log likelihoods (in the current setup, both error-driven learning models and the ideal adaptor models have only one free parameter)
+d.error <- d.combined %>%
+  filter(rate == "rate=0.1" & model == "sequential") %>%
+  mutate(Levels = gsub(" f0", "", Levels)) %>%
+  select(block, prob.p, Levels) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+d.io <- r_rep %>%
+  filter(type == "sequential" &  prior_nu == 256 & prior_kappa == 16) %>%
+  arrange(normalised_f0) %>%
+  mutate(Levels = ifelse(normalised_f0 == 199, "Low", "High")) %>%
+  select(block, prob.p, Levels) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+d.human <- IH_figure5 %>%
+  arrange(desc(Levels)) %>%
+  mutate(Levels = gsub(" f0", "", Levels)) %>%
+  select(-f0) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+modlm.error <- lm(d.human$diff ~ d.error$diff)
+logLik(modlm.error)
+
+modlm.io <- lm(d.human$diff ~ d.io$diff)
+logLik(modlm.io)
+
+AIC(modlm.error, modlm.io)
+BIC(modlm.error, modlm.io)
+
 ```
 
