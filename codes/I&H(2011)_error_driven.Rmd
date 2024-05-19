@@ -521,7 +521,10 @@ Figure3 <- d.combined %>%
 Figure3
 ```
 
+<<<<<<< HEAD
 # Xin: log likelihood as a means for model comparison.
+=======
+>>>>>>> bfd653bc3118d61306acbd0870126813c06d58aa
 ```{r model comparison}
 # calculate log likelihoods (in the current setup, both error-driven learning models and the ideal adaptor models have only one free parameter)
 d.error <- d.combined %>%
