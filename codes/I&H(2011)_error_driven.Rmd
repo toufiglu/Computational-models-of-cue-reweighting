@@ -5,7 +5,7 @@ date: "2023-12-08"
 ---
 ```{r setup, include=FALSE}
 rm(list = ls())
-library(ndl)
+library(ndl) # Yiming: add annotations for packages that are not commonly used and briefly describe why they are needed
 library(tidyverse)
 library(boot)
 library(mgcv)
@@ -129,7 +129,21 @@ calculate_luce_choice <- function(data) {
   mean(sapply(r.iterations, function(x) x[index]))
   })
   return(r.mean)
-  }
+}
+
+extract_trajectory <- function(data) {
+  d.iterations <- lapply(seq_along(data$w), function(i) {
+    table <- data$w[[i]]
+    Iteration = i
+    lowf0 <- table["normalised.f0199", "p"]
+    highf0 <- table["normalised.f0269", "p"]
+
+    return(data.frame(Iteration, lowf0, highf0))
+  })
+  combined_df <- do.call(rbind, d.iterations)
+  return(combined_df)
+}
+  
 
 format_training_data <- function(data) {
   data <- data %>%
@@ -152,6 +166,12 @@ format_training_data <- function(data) {
 
 # Load pre-training data, perform normalization
 ```{r message=FALSE, warning=FALSE}
+# Yiming: rename all the chunks in a straightforward and meaningful manner and avoid duplicated names. It would throw errors if you knit the rmd file. The chunk names should be self-explanatory. 
+
+
+# Yiming: the set up of the training-test data and long-term knowledge is shared between the two models. So please make them a separate thing and just call them when running the error-driven model and the other models. For instance, you can keep this part in a parent rmd; then have the ideal adaptor model and the error-driven learning model both as child rmd files that will be called and run subsequently.
+
+
 training_trials <- expand.grid(
     VOT = c(-20, -10, 0, 20, 30, 40),
     f0 = seq(220, 300, by=10),
@@ -284,6 +304,7 @@ vars <- ls()
 canonical_vars <- grep("^r_(0.01|0.1|0.9)_canonical", vars, value = TRUE)
 canonical_list <- mget(canonical_vars)
 canonical_results <- lapply(canonical_list, function(x) calculate_luce_choice(x))
+canonical_trajectory <- lapply(canonical_list, function(x) extract_trajectory(x))
 d.canonical <- as.data.frame(do.call(cbind, canonical_results))
 ```
 
@@ -317,6 +338,8 @@ neutral_vars <- grep("^r_(0.01|0.1|0.9)_neutral", vars, value = TRUE)
 neutral_list <- mget(neutral_vars)
 neutral_results <- lapply(neutral_list, function(x) calculate_luce_choice(x))
 d.neutral <- as.data.frame(do.call(cbind, neutral_results))
+neutral_trajectory <- lapply(neutral_list, function(x) extract_trajectory(x))
+
 ```
 
 
@@ -349,6 +372,70 @@ reversed_vars <- grep("^r_(0.01|0.1|0.9)_reversed", vars, value = TRUE)
 reversed_list <- mget(reversed_vars)
 reversed_results <- lapply(reversed_list, function(x) calculate_luce_choice(x))
 d.reversed <- as.data.frame(do.call(cbind, reversed_results))
+reversed_trajectory <- lapply(reversed_list, function(x) extract_trajectory(x))
+
+```
+
+# Examine block: what would happen if all exposure tokens have 10 ms VOT?
+The VOT values were firstly set to be identical to the rest of the blocks, and category labels are assigned in similar ways. But then, all VOT values were reset to 10 ms (normalized, 22 ms). We are interested in whether changing VOT values will provide a more dynamic readjustment of f0-to-category mapping. In fact, the results below show that the answer is yes. 
+```{r}
+examine = tribble(
+  ~VOT, ~f0,
+  -20, 290,
+  -10, 280,
+  -10, 290,
+  -10, 300,
+    0, 290,
+    20, 230,
+    30, 220,
+    30, 230,
+    30, 240,
+    40, 230
+   ) %>% format_training_data() %>% 
+  mutate(Cues = str_replace(Cues, "normalised\\.vot-?\\d+", "normalised.vot22"))
+
+r_0.01_examine_independent <- Run_Rescorla(exposure=examine, rate=0.01, w_pre=w.pre)
+r_0.1_examine_independent <- Run_Rescorla(exposure=examine, rate=0.1, w_pre=w.pre)
+r_0.9_examine_independent <- Run_Rescorla(exposure=examine, rate=0.9, w_pre=w.pre)
+
+
+vars <- ls()
+examine_vars <- grep("^r_(0.01|0.1|0.9)_examine", vars, value = TRUE)
+examine_list <- mget(examine_vars)
+examine_results <- lapply(examine_list, function(x) calculate_luce_choice(x))
+d.examine <- as.data.frame(do.call(cbind, examine_results))
+examine_trajectory <- lapply(examine_list, function(x) extract_trajectory(x))
+
+d.examine <- cbind(plot.data, d.examine) %>% 
+  pivot_longer(cols=-c(VOT, f0), names_to = "Model", values_to = "prob.p") %>% 
+  separate(Model, into = c("results", "rate", "block", "model"), sep = "_") %>%
+  select(-results) %>% 
+  mutate(VOT=10,
+         f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0"),
+         rate=paste0("rate=", rate)) %>% 
+  rename(Levels=f0)
+
+f.examine <- d.examine %>% 
+  ggplot(aes(x = block, y = prob.p, group = Levels, color = Levels)) + 
+  facet_grid(~rate) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
+  coord_cartesian(ylim = c(0, 1.1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme(legend.text = element_text (size = 20),
+        legend.position = "top",
+        legend.title = element_text(size = 20, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        axis.text.x = element_text(angle=22.5, hjust=1, size = 20),
+        axis.title = element_text(size = 20, face = "bold"),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major = element_line(color = "grey", size = 0.5),
+        panel.grid.minor = element_line(color = "lightgrey", size = 0.25),
+        strip.text.x = element_text(size = 20, face = "bold"),
+        strip.text.y = element_text(size = 20, face = "bold")) +
+  xlab ("Condition") + ylab("Proportion of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+  
 ```
 
 # Processing
@@ -361,6 +448,49 @@ d.combined <- cbind(plot.data, d.canonical, d.neutral, d.reversed) %>%
          f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0"),
          rate=paste0("rate=", rate)) %>% 
   rename(Levels=f0)
+
+```
+
+# Trajectory of the activation value of 230/290Hz for /p/
+```{r}
+add_condition <- function(df, name) {
+  df$condition <- name
+  return(df)
+}
+
+get_trajectory_list <- function(results) {
+  d.trajectory <- lapply(names(results), function(name) {
+    add_condition(results[[name]], name)
+  })
+  
+  combined_df <- do.call(rbind, d.trajectory)
+  return(combined_df)
+}
+
+vars <- ls()
+trajectories <- grep("^(canonical|neutral|reversed)_trajectory", vars, value = TRUE)
+trajectory_list <- mget(trajectories)
+tr <- lapply(trajectory_list, function(x) get_trajectory_list(x))
+tr <- do.call(rbind, tr)
+rownames(tr) <- NULL
+
+trajectory <- tr %>% 
+  separate(condition, into = c("data", "rate", "block", "model"), sep = "_", remove = TRUE) %>% 
+  select(-data) %>% 
+  mutate(block = factor(block, levels = c("canonical", "neutral", "reversed")))
+
+figure_trajectory <- trajectory %>% 
+  pivot_longer(cols = c(lowf0, highf0), names_to = "variable", values_to = "value") %>% 
+  mutate(Iteration=case_when(
+    block=="canonical" ~ Iteration,
+    block=="neutral" ~ Iteration+10,
+    TRUE ~ Iteration+20
+  )) %>% 
+  ggplot(aes(x=Iteration, y=value, color=variable)) +
+  facet_grid(rate~model) +
+  geom_line() +
+  geom_point() +
+  theme_minimal()
 ```
 
 
@@ -370,22 +500,60 @@ Figure3 <- d.combined %>%
   ggplot(aes(x = block, y = prob.p, group = Levels, color = Levels)) + 
   geom_point(size = 2) +
   scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
-  coord_cartesian(ylim = c(0.2, 0.8)) +
-  scale_y_continuous(breaks = c(0.2, 0.5, 0.8)) +
-  facet_grid(rate ~ model) +
+  coord_cartesian(ylim = c(0, 1.1)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  facet_grid(model ~ rate) +
   theme(legend.text = element_text (size = 20),
         legend.position = "top",
         legend.title = element_text(size = 20, face = "bold"),
         axis.text.y = element_text(size = 20),
-        axis.text.x = element_text(hjust=1, size = 20),
+        axis.text.x = element_text(angle=22.5, hjust=1, size = 20),
         axis.title = element_text(size = 20, face = "bold"),
         panel.background = element_rect(fill = "white"),
         panel.grid.major = element_line(color = "grey", size = 0.5),
         panel.grid.minor = element_line(color = "lightgrey", size = 0.25),
         strip.text.x = element_text(size = 20, face = "bold"),
         strip.text.y = element_text(size = 20, face = "bold")) +
-  xlab ("Condition") + ylab("Proportion of /p/ responses")
+  xlab ("Condition") + ylab("Proportion of /p/ responses") +
+  coord_cartesian(ylim = c(0,1))
+
 
 Figure3
+```
+
+# Xin: log likelihood as a means for model comparison.
+```{r model comparison}
+# calculate log likelihoods (in the current setup, both error-driven learning models and the ideal adaptor models have only one free parameter)
+d.error <- d.combined %>%
+  filter(rate == "rate=0.1" & model == "sequential") %>%
+  mutate(Levels = gsub(" f0", "", Levels)) %>%
+  select(block, prob.p, Levels) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+d.io <- r_rep %>%
+  filter(type == "sequential" &  prior_nu == 256 & prior_kappa == 16) %>%
+  arrange(normalised_f0) %>%
+  mutate(Levels = ifelse(normalised_f0 == 199, "Low", "High")) %>%
+  select(block, prob.p, Levels) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+d.human <- IH_figure5 %>%
+  arrange(desc(Levels)) %>%
+  mutate(Levels = gsub(" f0", "", Levels)) %>%
+  select(-f0) %>%
+  pivot_wider(names_from = Levels, values_from = prob.p) %>%
+  mutate(diff = High-Low)
+
+modlm.error <- lm(d.human$diff ~ d.error$diff)
+logLik(modlm.error)
+
+modlm.io <- lm(d.human$diff ~ d.io$diff)
+logLik(modlm.io)
+
+AIC(modlm.error, modlm.io)
+BIC(modlm.error, modlm.io)
+
 ```
 
