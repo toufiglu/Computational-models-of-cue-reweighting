@@ -43,3 +43,11 @@ if (has_internet()) install_github("crsh/papaja", ref = "devel")
 library(papaja)
 if (has_internet()) install_github("hlplab/MVBeliefUpdatr", INSTALL_opts = "--no-lock", upgrade = "never")
 library(MVBeliefUpdatr)
+
+
+library(ndl)
+library(tidyverse)
+library(boot)
+library(mgcv)
+library(magrittr)
+library(dplyr)

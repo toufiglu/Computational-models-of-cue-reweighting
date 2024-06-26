@@ -3,174 +3,17 @@ title: "Error-driven learning model"
 output: html_document
 date: "2023-12-08"
 ---
-```{r setup, include=FALSE}
+# set up
+```{r load libraries and necessary functions, include=FALSE}
 rm(list = ls())
-library(ndl) # Yiming: add annotations for packages that are not commonly used and briefly describe why they are needed
-library(tidyverse)
-library(boot)
-library(mgcv)
-library(magrittr)
-source("functions.R")
-maxRep = 1000
+source("libraries.R")
+source("new_functions.R") # these are functions specific to these simulations.
+source("parameters.R")
 ```
 
-# Load functions: Rescorla function is adapted from Harmon et al., (2019)
-```{r RW-code} 
-Rescorla = function (cuesOutcomes = train,
-                     Lambda=1,
-                     rate,
-			               w) 
-{   
-    cues = unique(unlist(strsplit(cuesOutcomes$Cues, "_")))
-    outcomes = unique(unlist(strsplit(cuesOutcomes$Outcomes, "_")))
-    
-    w=w
-
-    preTrained=FALSE
-    if (all(!is.na(w))==TRUE){preTrained=TRUE}
-    if (preTrained==TRUE) {outcomes = colnames(w)}
-    if (preTrained==FALSE) 
-     { 
-      w = matrix(0, length(cues), length(outcomes)) 
-      rownames(w)=cues
-      colnames(w)=outcomes
-	}
-    theCues = strsplit(cuesOutcomes$Cues, "_")
-    theOutcomes = strsplit(cuesOutcomes$Outcomes, "_")
-    
-    if (preTrained==FALSE) {knownOutcomes = NULL}
-    if (preTrained==TRUE) {knownOutcomes = outcomes}
-    
-    for (i in 1:nrow(cuesOutcomes)) {
-      cs = theCues[[i]]
-      ou = theOutcomes[[i]] 
-      toAdd = ou[!is.element(ou, knownOutcomes)]
-      knownOutcomes = c(knownOutcomes, toAdd)
-      Vtotal = colSums(w[cs,ou,drop=FALSE])
-	    w[cs,ou] = t(t(w[cs,ou]) + (Lambda-Vtotal)*rate)
-	    otherou = knownOutcomes[!is.element(knownOutcomes, ou)]
-
-      if (!is.null(otherou)) {
-         Vtotal = colSums(w[cs,otherou,drop=FALSE])
-  	     w[cs,otherou] = t(t(w[cs,otherou]) + (0-Vtotal)*rate)
-      }
-    }
-    return(w)
-}
-
-Run_Rescorla <- function(exposure, w_pre, rate) 
-  {
-  train = exposure
-  train$Cues<-as.character(train$Cues)
-  train$Outcomes<-as.character(train$Outcomes)
-  
-  # record the results for each round.
-  plot_round <- list()
-  w_round <- list()
-  
-  # The Rescorla-Wagner model has substantial randomness due to the order of presentation. Therefore, following Harmon et al., 2019's implementation, we also ran the model 1000 times and take an averaged responses. To maintain reproducible results, we set seed before each of the outer loop as well as the inner loop.
-
-  for (round in 1:10) {
-    w <- if (round == 1) w_pre else w_round[[round - 1]]
-    act.p <- matrix(NA, numTestStim, maxRep)
-    act.b <- matrix(NA, numTestStim, maxRep)
-    
-    set.seed(123+round)
-    train<-train[sample(nrow(train)),]
-    
-  for (nRep in 1:maxRep)
-  {
-      set.seed(1000 * round + nRep)
-      train<-train[sample(nrow(train)),]
-      if (nRep==1) {w<-Rescorla(train,rate=rate,w=w)}
-      else {w<-(w*(nRep-1)+Rescorla(train,rate=rate,w=w))/nRep}
-      
-  
-      #activation of p and b for each test stimulus
-      for (i in 1:numTestStim)
-      {
-      act.p[i,nRep]<-sum(w[testStim[i,],"p"])  
-      act.b[i,nRep]<-sum(w[testStim[i,],"b"])   
-      }
-      
-  }
-  
-  #following Harmon and colleagues, we limit activation to be between 0 and 1
-  act.p[act.p<0]<-0
-  act.b[act.b<0]<-0
-  act.p[act.p>1]<-1
-  act.b[act.b>1]<-1
-  
-  #Calculating the mean activation of p and b across replications
-  #Putting it into the plot data
-  plot_round[[round]] <- list(
-        mean.act.p = apply(act.p, 1, mean),
-        sd.act.p = apply(act.p, 1, sd),
-        mean.act.b = apply(act.b, 1, mean),
-        sd.act.b = apply(act.b, 1, sd)
-    )
-  
-  w_round[[round]]=w
-  
-  }
-  return(list(plot_data = plot_round, w=w_round))
-}
-
-calculate_luce_choice <- function(data) {
-  # apply Luce's choice rule to get the probability of p for each of the two test tokens in each iteration
-  r.iterations <- lapply(data$plot_data, function(list_data) {
-    mean_act_p <- list_data$mean.act.p
-    mean_act_b <- list_data$mean.act.b
-    mean_act_p / (mean_act_p + mean_act_b)
-  })
-
-  # calculate the mean over the 10 iterations.
-  r.mean <- sapply(1:2, function(index) {
-  mean(sapply(r.iterations, function(x) x[index]))
-  })
-  return(r.mean)
-}
-
-extract_trajectory <- function(data) {
-  d.iterations <- lapply(seq_along(data$w), function(i) {
-    table <- data$w[[i]]
-    Iteration = i
-    lowf0 <- table["normalised.f0199", "p"]
-    highf0 <- table["normalised.f0269", "p"]
-
-    return(data.frame(Iteration, lowf0, highf0))
-  })
-  combined_df <- do.call(rbind, d.iterations)
-  return(combined_df)
-}
-  
-
-format_training_data <- function(data) {
-  data <- data %>%
-  left_join(f0_reference, by='f0') %>% 
-  left_join(VOT_reference, by='VOT') %>% 
-  mutate(
-    Frequency = 1,
-    Outcomes = case_when(
-      VOT %in% c(-20, -10, 0) ~ "b",
-      TRUE ~ "p"
-    ),
-    Cues = paste(paste0("normalised.vot", VOT_centered), 
-                 paste0("normalised.f0", f0_centered), sep = "_"),
-  ) %>% 
-  select(Cues, Outcomes, Frequency) %>% 
-  slice(rep(1:n(), each = Frequency)) %>% 
-  select(-Frequency)
-}
-```
-
-# Load pre-training data, perform normalization
-```{r message=FALSE, warning=FALSE}
-# Yiming: rename all the chunks in a straightforward and meaningful manner and avoid duplicated names. It would throw errors if you knit the rmd file. The chunk names should be self-explanatory. 
-
-
+# prepare pre-training data
+```{r load Chodroff and Wilson (2018) as pretraining data and  message=FALSE, warning=FALSE}
 # Yiming: the set up of the training-test data and long-term knowledge is shared between the two models. So please make them a separate thing and just call them when running the error-driven model and the other models. For instance, you can keep this part in a parent rmd; then have the ideal adaptor model and the error-driven learning model both as child rmd files that will be called and run subsequently.
-
 
 training_trials <- expand.grid(
     VOT = c(-20, -10, 0, 20, 30, 40),
@@ -191,7 +34,8 @@ test_trials <- data.frame(
 # The rationale here is similar to the pretraining of the ideal adaptor.
 
 experiment_pretraining <- rbind(training_trials, test_trials) %>% 
-  mutate(f0_Mel = phonR::normMel(f0))
+  mutate(f0_Mel = phonR::normMel(f0)) %>% 
+  
 
 Long_term_knowledge <- readRDS("d.chodroff_wilson.rds") %>%
   filter(poa == "/b/-/p/") %>%
@@ -210,7 +54,7 @@ Long_term_knowledge <- readRDS("d.chodroff_wilson.rds") %>%
   group_by(Talker, category) %>%
   sample_n(size = first(n_min)) %>%
   ungroup() %>%
-  select(Talker, VOT, f0, f0_Mel, category) %>% 
+  dplyr::select(Talker, VOT, f0, f0_Mel, category) %>% 
   bind_rows(experiment_pretraining) %>% 
   mutate(
     f0_centered = round(apply_ccure(f0_Mel, data = .), 0),
@@ -222,11 +66,11 @@ experiment_pretraining <- Long_term_knowledge %>%
 
 # reference table for normalization to be used later.
 f0_reference <- experiment_pretraining %>% 
-  select(f0, f0_Mel, f0_centered) %>% 
+  dplyr::select(f0, f0_Mel, f0_centered) %>% 
   distinct()
 
 VOT_reference <- experiment_pretraining %>% 
-  select(VOT, VOT_centered) %>% 
+  dplyr::select(VOT, VOT_centered) %>% 
   distinct()
 
 experiment_pretraining <- experiment_pretraining %>% 
@@ -237,7 +81,7 @@ experiment_pretraining <- experiment_pretraining %>%
                  sep = "_"),
     Outcomes = category
   ) %>% 
-  select(Cues, Outcomes, Frequency)
+  dplyr::select(Cues, Outcomes, Frequency)
   
 
 Long_term_pretraining <- Long_term_knowledge %>% 
@@ -250,7 +94,7 @@ Long_term_pretraining <- Long_term_knowledge %>%
                  sep = "_")) %>% 
   count(Cues, Outcomes) %>% 
   mutate(Frequency = n) %>% 
-  select(-n)
+  dplyr::select(-n)
 
 pretraining <- rbind(Long_term_pretraining, experiment_pretraining)
 
@@ -259,7 +103,7 @@ w.pre<-estimateWeights(pretraining)
 ```
 
 # test items
-```{r}
+```{r prepare test items}
 # The raw values for test items are VOT10, f0230,290. Here, we make reference to
 # VOT_reference and f0_reference tables.
 
@@ -273,8 +117,8 @@ act.b<-mat.or.vec(numTestStim,maxRep)
 ```
 
 
-# Canonical
-```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# canonical
+```{r get canonical block exposure data and results message=FALSE, warning=FALSE, paged.print=FALSE}
 canonical <- tribble(
   ~VOT, ~f0,
   -20, 230,
@@ -309,8 +153,8 @@ d.canonical <- as.data.frame(do.call(cbind, canonical_results))
 ```
 
 
-# Neutral
-```{r message=FALSE, warning=FALSE}
+# neutral
+```{r get neutral block exposure data and results message=FALSE, warning=FALSE}
 neutral = tribble(
   ~VOT, ~f0,
   -20, 260,
@@ -343,8 +187,8 @@ neutral_trajectory <- lapply(neutral_list, function(x) extract_trajectory(x))
 ```
 
 
-# Reversed
-```{r message=FALSE, warning=FALSE}
+# reversed
+```{r get reversed block exposure data and results message=FALSE, warning=FALSE}
 reversed = tribble(
   ~VOT, ~f0,
   -20, 290,
@@ -376,21 +220,21 @@ reversed_trajectory <- lapply(reversed_list, function(x) extract_trajectory(x))
 
 ```
 
-# Examine block: what would happen if all exposure tokens have 10 ms VOT?
+# examine model architecture
 The VOT values were firstly set to be identical to the rest of the blocks, and category labels are assigned in similar ways. But then, all VOT values were reset to 10 ms (normalized, 22 ms). We are interested in whether changing VOT values will provide a more dynamic readjustment of f0-to-category mapping. In fact, the results below show that the answer is yes. 
-```{r}
+```{r to test the hypothesis that the limited re-weighting is due to the mixture of Gaussian architecture rather than the mechanism of the error-driven learning model, we keep VOT uninformative in this additional exposure block}
 examine = tribble(
   ~VOT, ~f0,
-  -20, 290,
-  -10, 280,
-  -10, 290,
-  -10, 300,
-    0, 290,
-    20, 230,
-    30, 220,
-    30, 230,
-    30, 240,
-    40, 230
+  -20, 230,
+  -10, 220,
+  -10, 230,
+  -10, 240,
+    0, 230,
+    20, 290,
+    30, 280,
+    30, 290,
+    30, 300,
+    40, 290
    ) %>% format_training_data() %>% 
   mutate(Cues = str_replace(Cues, "normalised\\.vot-?\\d+", "normalised.vot22"))
 
@@ -409,7 +253,7 @@ examine_trajectory <- lapply(examine_list, function(x) extract_trajectory(x))
 d.examine <- cbind(plot.data, d.examine) %>% 
   pivot_longer(cols=-c(VOT, f0), names_to = "Model", values_to = "prob.p") %>% 
   separate(Model, into = c("results", "rate", "block", "model"), sep = "_") %>%
-  select(-results) %>% 
+  dplyr::select(-results) %>% 
   mutate(VOT=10,
          f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0"),
          rate=paste0("rate=", rate)) %>% 
@@ -435,74 +279,29 @@ f.examine <- d.examine %>%
         strip.text.y = element_text(size = 20, face = "bold")) +
   xlab ("Condition") + ylab("Proportion of /p/ responses") +
   coord_cartesian(ylim = c(0,1))
-  
+f.examine
 ```
 
-# Processing
-```{r}
+# data processing
+```{r merge results of the three blocks and prepare for ploting}
 d.combined <- cbind(plot.data, d.canonical, d.neutral, d.reversed) %>% 
   pivot_longer(cols=-c(VOT, f0), names_to = "Model", values_to = "prob.p") %>% 
   separate(Model, into = c("results", "rate", "block", "model"), sep = "_") %>%
-  select(-results) %>% 
+  dplyr::select(-results) %>% 
   mutate(VOT=10,
-         f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0"),
-         rate=paste0("rate=", rate)) %>% 
+         f0=ifelse(f0=="normalised.f0199", "Low f0", "High f0")) %>% 
   rename(Levels=f0)
-
 ```
 
-# Trajectory of the activation value of 230/290Hz for /p/
-```{r}
-add_condition <- function(df, name) {
-  df$condition <- name
-  return(df)
-}
-
-get_trajectory_list <- function(results) {
-  d.trajectory <- lapply(names(results), function(name) {
-    add_condition(results[[name]], name)
-  })
-  
-  combined_df <- do.call(rbind, d.trajectory)
-  return(combined_df)
-}
-
-vars <- ls()
-trajectories <- grep("^(canonical|neutral|reversed)_trajectory", vars, value = TRUE)
-trajectory_list <- mget(trajectories)
-tr <- lapply(trajectory_list, function(x) get_trajectory_list(x))
-tr <- do.call(rbind, tr)
-rownames(tr) <- NULL
-
-trajectory <- tr %>% 
-  separate(condition, into = c("data", "rate", "block", "model"), sep = "_", remove = TRUE) %>% 
-  select(-data) %>% 
-  mutate(block = factor(block, levels = c("canonical", "neutral", "reversed")))
-
-figure_trajectory <- trajectory %>% 
-  pivot_longer(cols = c(lowf0, highf0), names_to = "variable", values_to = "value") %>% 
-  mutate(Iteration=case_when(
-    block=="canonical" ~ Iteration,
-    block=="neutral" ~ Iteration+10,
-    TRUE ~ Iteration+20
-  )) %>% 
-  ggplot(aes(x=Iteration, y=value, color=variable)) +
-  facet_grid(rate~model) +
-  geom_line() +
-  geom_point() +
-  theme_minimal()
-```
-
-
-# Figure 3
-```{r}
-Figure3 <- d.combined %>%
+# averaged results figure
+```{r averaged results plot for the error-driven model; part of this plot is figure 3 of the cogsci paper}
+Figure3 <- d.combined %>% 
   ggplot(aes(x = block, y = prob.p, group = Levels, color = Levels)) + 
   geom_point(size = 2) +
   scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")) +
   coord_cartesian(ylim = c(0, 1.1)) +
   scale_y_continuous(breaks = c(0, 0.5, 1)) +
-  facet_grid(model ~ rate) +
+  facet_grid(rate ~ model) +
   theme(legend.text = element_text (size = 20),
         legend.position = "top",
         legend.title = element_text(size = 20, face = "bold"),
@@ -520,17 +319,69 @@ Figure3 <- d.combined %>%
 
 Figure3
 ```
+# trajectory figure
+```{r get trajectory of /p/ responses}
+vars <- ls()
+trajectories <- grep("^(canonical|neutral|reversed)_trajectory", vars, value = TRUE)
+trajectory_list <- mget(trajectories)
+d.trajectory <- lapply(trajectory_list, function(x) get_trajectory_list(x))
+d.trajectory <- do.call(rbind, d.trajectory)
+rownames(d.trajectory) <- NULL
 
-<<<<<<< HEAD
+trajectory <- d.trajectory %>% 
+  separate(condition, into = c("data", "rate", "block", "model"), sep = "_", remove = TRUE) %>% 
+  dplyr::select(-data) %>% 
+  mutate(block = factor(block, levels = c("canonical", "neutral", "reversed")))
+
+# this is to plot the initial state at time 0
+pretraining <- tibble(
+  Iteration = 0,
+  lowf0 = w.pre["normalised.f0199", "p"] * 199 + w.pre["normalised.vot22", "p"] * 22,
+  highf0 = w.pre["normalised.f0269", "p"] * 269 + w.pre["normalised.vot22", "p"] * 22
+)
+
+blocks <- unique(trajectory$block)
+models <- unique(trajectory$model)
+rates <- unique(trajectory$rate)
+
+# make the pretraining result present in every facet of the figure, but only show it in the canonical block to avoid having two data points at the same time step on x-axis.
+pretraining_expanded <- expand_grid(pretraining, block = blocks, model = models, rate=rates) %>%
+  filter(block=="canonical")
+
+# Bind the pretraining_expanded tibble to the trajectory table
+trajectory_combined <- bind_rows(pretraining_expanded, trajectory)
+
+# plot the trajectory figure
+figure_trajectory <- trajectory_combined %>% 
+  pivot_longer(cols = c(lowf0, highf0), names_to = "variable", values_to = "value") %>% 
+  mutate(Iteration=case_when(
+    block=="canonical" ~ Iteration,
+    block=="neutral" ~ Iteration+10,
+    TRUE ~ Iteration+20
+  )) %>% 
+  ggplot(aes(x=Iteration, y=value, color=variable)) +
+  facet_grid(rate~model) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "The trajectory of /p/ responses in the error-driven learning model",
+       x = "iteration",
+       y = "Activation weight",
+       color = "f0") +
+  scale_color_manual(values=c("highf0"="blue", "lowf0"="orange"))
+
+
+figure_trajectory
+```
+
 # Xin: log likelihood as a means for model comparison.
 =======
->>>>>>> bfd653bc3118d61306acbd0870126813c06d58aa
 ```{r model comparison}
 # calculate log likelihoods (in the current setup, both error-driven learning models and the ideal adaptor models have only one free parameter)
 d.error <- d.combined %>%
   filter(rate == "rate=0.1" & model == "sequential") %>%
   mutate(Levels = gsub(" f0", "", Levels)) %>%
-  select(block, prob.p, Levels) %>%
+  dplyr::select(block, prob.p, Levels) %>%
   pivot_wider(names_from = Levels, values_from = prob.p) %>%
   mutate(diff = High-Low)
 
@@ -538,14 +389,14 @@ d.io <- r_rep %>%
   filter(type == "sequential" &  prior_nu == 256 & prior_kappa == 16) %>%
   arrange(normalised_f0) %>%
   mutate(Levels = ifelse(normalised_f0 == 199, "Low", "High")) %>%
-  select(block, prob.p, Levels) %>%
+  dplyr::select(block, prob.p, Levels) %>%
   pivot_wider(names_from = Levels, values_from = prob.p) %>%
   mutate(diff = High-Low)
 
 d.human <- IH_figure5 %>%
   arrange(desc(Levels)) %>%
   mutate(Levels = gsub(" f0", "", Levels)) %>%
-  select(-f0) %>%
+  dplyr::select(-f0) %>%
   pivot_wider(names_from = Levels, values_from = prob.p) %>%
   mutate(diff = High-Low)
 

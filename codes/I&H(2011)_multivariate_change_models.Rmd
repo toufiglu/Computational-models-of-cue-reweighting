@@ -9,114 +9,18 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 source("libraries.R")
 source("functions.R")
 source("parameters.R")
-
+source("new_functions.R")
 # set.seed(83984)
-```
-
-# Load functions: functions for packaging, processing, and visualzing data
-```{r load functions to be used below}
-# format exposure data
-get_exposure_data <- function(input_data, Condition, n.subject=1) {
-  input_data <- input_data %>%
-    left_join(f0_reference, by='f0') %>%
-    left_join(VOT_reference, by='VOT') %>% 
-    mutate(Condition=Condition,
-           Item.Type=Condition,
-           Item.Category = case_when(
-                VOT %in% c(-20, -10, 0) ~ "/b/",
-                TRUE ~ "/p/")) %>%
-    dplyr::select(-VOT, -f0, -f0_Mel) %>%
-    rename(VOT = VOT_centered,
-           f0_Mel = f0_centered) %>% 
-    crossing(Subject = factor(1:n.subject)) %>%
-    mutate(Subject = paste(Condition, Subject, sep = "."),
-           Phase = 'training',
-           x = map2(VOT, f0_Mel, ~ c("VOT" = .x, "f0_Mel" = .y))) %>% 
-    mutate(ItemID=as.character(row_number()))
-  
-  names(input_data$x) <- NULL
-  
-  return(input_data)
-}
-
-# a function used to deal with sequential models
-model_for_sequential <- function(representation.model) {
-  representation.model <- representation.model %>% 
-        mutate_at(vars(starts_with("prior_")), ~as.numeric(as.character(.x))) %>%
-        filter(Item.Intended_category == "/p/") %>% 
-        select(prior_kappa, prior_nu, posterior) %>%
-        unnest(posterior)
-}
-
-# the following two functions will be used for processing results of the ideal adaptor and the normalization change model.
-rep_processing <- function(variable) {
-  data <- get(variable, envir = .GlobalEnv)
-  results <- 
-    data %>%
-    bind_rows() %>% 
-    mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-           normalised_f0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-           normalised_f0 = factor(normalised_f0)) %>% 
-    group_by(Condition, prior_kappa, prior_nu, Item.Intended_category, normalised_f0) %>% # normalised_f0 is essentially determined by Item.Intended_category. It is included here to make sure that the column remains, which will be used for plotting below.
-    summarise(mean_prob_p = mean(prob.p), .groups = 'drop') %>% 
-    rename(prob.p=mean_prob_p)
-  
-  return(results)
-}
-
-norm_processing <- function(variable) {
-  data <- get(variable, envir = .GlobalEnv)
-  results <- 
-    data %>%
-    bind_rows() %>% 
-    mutate(prob.p = ifelse(Item.Intended_category =="/p/", response, 1-response),
-           normalised_f0 = ifelse(Item.Intended_category =="/p/", 269, 199),
-           normalised_f0 = factor(normalised_f0)) %>% 
-    group_by(Condition, prior_kappa.normalization, Item.Intended_category, normalised_f0) %>% 
-    summarise(mean_prob_p = mean(prob.p), .groups = 'drop') %>% 
-    rename(prob.p=mean_prob_p)
-  
-  return(results)
-}
-
-# visualization function
-basic_IH_result_plot <- function(data) {
-  data %>%
-    mutate(Levels = ifelse(normalised_f0 == 199, "Low f0", "High f0")) %>% 
-    ggplot(aes(x = block, y = prob.p, group = Levels)) +
-    list(
-      geom_point(size = 2, aes(color = Levels)),
-      scale_color_manual(values = c("Low f0" = "orange", "High f0" = "blue")),
-      coord_cartesian(ylim = c(0.2, 0.8)),
-      scale_y_continuous(breaks = c(0.2, 0.5, 0.8)),
-      scale_x_discrete(labels= c("canonical", "neutral", "reversed")),
-      xlab("Exposure condition"),
-      ylab("Proportion of /p/ responses"),
-      theme(
-        legend.key.height= duo.panel.key,
-        legend.position = "top", 
-        axis.text.x = element_text(hjust=1, size = 20),
-        axis.text.y = element_text(size = 20),
-        axis.title.x = element_text(size = 20, face = "bold"),
-        axis.title.y = element_text(size = 20, face = "bold"),
-        legend.text = element_text (size = 20),
-        legend.title = element_text(size = 20, face = "bold"),
-        plot.title = element_text(size = 20),
-        strip.text.x = element_text(size= 20, face = "bold"),
-        strip.text.y = element_text(size= 20, face = "bold"),
-        panel.background = element_rect(fill = "white"),
-        panel.grid.major = element_line(color = "grey", size = 0.5),
-        panel.grid.minor = element_line(color = "lightgrey", size = 0.25))
-      )
-}
-
 ```
 
 # Pretraining and normalization of all tokens used
 ```{r filter pretraining data from C&W and get ideal observer}
 
 # training_trials and test_trials contain all the tokens that will be talker-normalized; each token appears only once
+
 ## Yiming: let's revisit the procedure of talker-normalization for the experimental talker, in terms of how repetitions of the same token should be used in this process (cf. Zhang et al. 2018)
+
+# Yiming's response: my approach is to leave the model with a record for the stimuli, so that there will be a normalised value for the stimuli. Perhaps we should develop a more dynamic approach, where, after each block, we do the normalization again?  
 
 training_trials <- expand.grid(
     VOT = c(-20, -10, 0, 20, 30, 40),
@@ -410,7 +314,7 @@ r_rep <- map(rep_models, rep_processing) %>% bind_rows() %>%
   separate(Condition,into = c("block", "type"), sep = "_", remove = FALSE)
 ```
 
-#Figure4
+#Figure4: in this version I plotted independent and sequential separately
 ```{r Figure4: ideal adaptor results}
 make_results_plot_representations <- function(data) {
   # for clarity we only present results for a small range of values.
@@ -418,116 +322,44 @@ make_results_plot_representations <- function(data) {
   # We used nu=256, which means that listeners still largely rely on their prior experiences (it will take more than 256 input tokens to completely update previous experiences.)
   # The three kappa values selected are representative of the general patterns we observe in the data.
   # But readers are encouraged to delete this line and print the full range of results.
-  data <- data %>% filter(prior_kappa %in% c(16,64,256) & prior_nu == 256)
-  
+
   p.results <-
     basic_IH_result_plot(data) +
     facet_grid(
-      prior_kappa ~ type,
+      prior_kappa ~ prior_nu,
       labeller = label_bquote(
         rows = {kappa[.(categories.IH[1])] == kappa[.(categories.IH[2])]} == .(as.character(prior_kappa)))) +
     ggh4x::force_panelsizes(cols = result.panel.size, rows = result.panel.size)
 
 }
 
-Figure4 <- make_results_plot_representations(r_rep)
-Figure4
+figure_independent <- make_results_plot_representations(r_rep %>% filter(type=="independent"))
+
+
+figure_sequential <- make_results_plot_representations(r_rep %>% filter(type=="sequential"))
+
+figure_independent
+figure_sequential
 ```
-  
+
+# get trajectory results
+```{r gather results across different blocks}
+independent_results <- get_trajectory_results(representation_IH_canonical_independent, representation_IH_neutral_independent, representation_IH_reversed_independent)
+
+sequential_results <- get_trajectory_results(representation_IH_canonical_sequential, representation_IH_neutral_sequential, representation_IH_reversed_sequential)
+```
+
+# trajectory visualization
+```{r visualiaztion of trajectory in the ideal adaptor models}
+IH11_trajectory_independent <- plot_response_trajectory(independent_results)
+IH11_trajectory_independent
+
+IH11_trajectory_sequential <- plot_response_trajectory(sequential_results)
+IH11_trajectory_sequential
+```
+
 ## Normalization models
 ```{r the normalization change model, as well as its results for different blocks}
-update_normalization_and_categorize_test <- function(
-  prior,
-  mu_0 = first(prior_marginal_VOT_f0_stats$x_mean),
-  kappa.normalization,
-  exposure,
-  test
-) {
-
-  # Get normalization parameters for exposure data
-  exposure.normalization <- 
-    exposure %>%
-    summarise(
-      x_N = length(x),
-      x_mean = list(colMeans(reduce(x, rbind))),
-      x_cov = list(cov(reduce(x, rbind))))
-  
-  # Apply normalization based on exposure to test
-  mu_inferred <- 1 / 
-            (kappa.normalization + exposure.normalization$x_N[[1]]) * 
-            (kappa.normalization * mu_0 + exposure.normalization$x_N[[1]] * exposure.normalization$x_mean[[1]])
-  
-  test %<>%
-    mutate(
-      x_unnormalized = x,
-      x = map(x, ~ .x - (mu_inferred - mu_0)))
-      
-  test %>%
-    select(x_unnormalized, x, Item.Intended_category) %>%
-    nest(x = x, Item.Intended_category = c(x, Item.Intended_category, x_unnormalized)) %>%
-    mutate(posterior = list(prior)) %>%
-    
-    # Don't add test again since it's already in the data
-    add_test_and_categorize(test = NULL)
-}
-
-
-get_normalization_models_for_plot <- function(
-    prior_kappa.normalization = c(4, 16, 64, 256, 1024),
-    d.IH.exposure,
-    normalization.prior,
-    type
-){
-  all_normalizations <- list()  # Create an empty list to store results from each iteration
-  Condition = d.IH.exposure$Condition[[1]]
-  
-  if (RESET_MODELS || !file.exists(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))){
-    
-  for(i in 1:10){  # Loop to iterate 10 times
-    set.seed(100+i)
-    d.IH.exposure<-d.IH.exposure[sample(nrow(d.IH.exposure)),]
-
-      if(i == 1){
-        normalization.adaptor <-  normalization.prior
-      } else {
-        normalization.adaptor <- all_normalizations[[i-1]]
-      }
-  
-      
-      normalization.adaptor <- normalization.adaptor %>% 
-        filter(Item.Intended_category == "/p/") %>% 
-        select(prior_kappa.normalization, posterior) %>% 
-        rename(prior=posterior)
-    
-      normalization.pred <- 
-        d.IH.exposure %>%
-        nest(data = -c(Condition, Subject)) %>%
-        crossing(prior_kappa.normalization = normalization.adaptor$prior_kappa.normalization,
-                 prior = normalization.adaptor$prior) %>%
-        mutate(prior_kappa.normalization = as.numeric(as.character(prior_kappa.normalization))) %>% 
-        group_by(Condition, Subject, prior_kappa.normalization) %>% 
-        group_modify(
-          ~ update_normalization_and_categorize_test(
-            prior = .x$prior[[1]],
-            kappa.normalization = .y$prior_kappa.normalization,
-            exposure = .x$data[[1]],
-            test = d.IH.test)) %>%
-        mutate_at(vars(starts_with("prior_")), ~factor(.x)) %>%
-        mutate_at(vars(starts_with("prior_")), fct_rev) %>%
-        ungroup()
-
-      all_normalizations[[i]] <- normalization.pred
-      }
-      saveRDS(all_normalizations, get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))
-    } else {
-      all_normalizations <- readRDS(get_path(paste0("../models/d.IH.results.normalization_", example_label, "_", Condition, "_", type, ".rds")))
-      
-    }
-  
-
-  return(all_normalizations)
-}
-
 m.ia.VOT_f0.IH.normalization <- m.ia.VOT_f0.IH %>% 
   filter(prior_kappa == max(prior_kappa) & prior_nu == max(prior_nu)) %>%
   nest(posterior = everything()) %>% 
@@ -595,4 +427,7 @@ make_results_plot_normalization <- function(data){
 Figure5 <- make_results_plot_normalization(r_norm)
 Figure5
 ```
+
+
+
 

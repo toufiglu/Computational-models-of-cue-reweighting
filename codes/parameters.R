@@ -18,3 +18,4 @@ range.beta_pi <- c(10^-3, 10^2)
 ## parameters for normalization model
 range.prior_kappa.normalization <- c(1, 10000)
 categories.IH <- c("/b/", "/p/")
+maxRep = 1000
