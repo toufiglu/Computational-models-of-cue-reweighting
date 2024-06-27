@@ -521,7 +521,6 @@ Figure3 <- d.combined %>%
 Figure3
 ```
 
-
 # Xin: log likelihood as a means for model comparison.
 
 ```{r model comparison}
