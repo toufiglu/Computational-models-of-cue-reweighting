@@ -265,7 +265,8 @@ basic_IH_result_plot <- function(data) {
 get_trajectory_results <- function(canonical, neutral, reversed) {
   output <- 
     rbind(bind_rows(canonical), bind_rows(neutral), bind_rows(reversed)) %>% 
-    unnest_wider(x) %>% 
+    unnest_wider(x) %>%
+    mutate(response = ifelse(category=="/b/", 1-response, response)) %>% 
     mutate(f0=ifelse(f0_Mel=="269", "highf0", "lowf0")) %>% 
     mutate(Iteration=case_when(str_starts(Subject, "canonical") ~ Iteration,
                                str_starts(Subject, "neutral") ~ Iteration + 10,
